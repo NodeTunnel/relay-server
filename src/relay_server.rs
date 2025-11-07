@@ -8,12 +8,12 @@ use std::net::SocketAddr;
 use std::time::{Duration};
 use tokio::time::sleep;
 
-pub struct GameServer {
+pub struct RelayServer {
     renet_connection: RenetConnection,
     rooms: HashMap<String, Room>,
 }
 
-impl GameServer {
+impl RelayServer {
     pub fn new(addr: SocketAddr) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
             renet_connection: RenetConnection::new(addr)?,
@@ -53,7 +53,6 @@ impl GameServer {
                     self.handle_join_room(packet.renet_id, room_id);
                 }
                 PacketType::GameData(target_id, data) => {
-                    // Forward the ORIGINAL data bytes, not re-wrapped
                     self.handle_game_data_raw(packet.renet_id, target_id, data, packet.channel);
                 }
                 _ => {}
@@ -88,7 +87,6 @@ impl GameServer {
         );
 
         self.rooms.insert(client_id.to_string(), room);
-        println!("Updated rooms array: {}", self.rooms.len());
     }
 
     fn handle_join_room(&mut self, client_id: ClientId, room_id: String) {
@@ -114,9 +112,6 @@ impl GameServer {
     }
 
     fn handle_game_data_raw(&mut self, client_id: ClientId, target_id: i32, original_data: Vec<u8>, channel: DefaultChannel) {
-        println!("handle_game_data_raw: from client {}, target {}, data len: {}",
-                 client_id, target_id, original_data.len());
-
         for (_room_id, room) in &self.rooms {
             if let Some(sender_godot_id) = room.get_godot_id(client_id) {
                 if let Some(target_renet_id) = room.get_renet_id(target_id) {
