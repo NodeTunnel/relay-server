@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::process::exit;
 use std::time::{Duration};
 use tokio::time::sleep;
+use crate::CONFIG;
 
 pub struct RelayServer {
     renet_connection: RenetConnection,
@@ -20,18 +21,18 @@ impl RelayServer {
         Ok(Self {
             renet_connection: RenetConnection::new(addr)?,
             rooms: HashMap::new(),
-            time_since_use: 0
+            time_since_use: 0,
         })
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        println!("Relay listening on port 8080");
+        let cfg = CONFIG.get().unwrap();
         
         loop {
             self.update().await?;
             sleep(Duration::from_millis(16)).await;
 
-            if self.rooms.is_empty() {
+            if self.rooms.is_empty() && cfg.relay.auto_shutdown {
                 self.time_since_use += 16;
 
                 if self.time_since_use > 60000 {

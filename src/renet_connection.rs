@@ -3,6 +3,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime};
 use renet::{Bytes, ClientId, ConnectionConfig, DefaultChannel, RenetServer, ServerEvent};
 use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
+use crate::version::PROTOCOL_VERSION;
 
 pub struct Packet {
     pub renet_id: ClientId,
@@ -22,14 +23,16 @@ impl RenetConnection {
         let server_config = ServerConfig {
             current_time: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?,
             max_clients: 100,
-            protocol_id: 0,
+            protocol_id: PROTOCOL_VERSION,
             public_addresses: vec![bind_addr],
             authentication: ServerAuthentication::Unsecure,
         };
 
         let transport = NetcodeServerTransport::new(server_config, socket)?;
         let server = RenetServer::new(ConnectionConfig::default());
-
+    
+        println!("UDP server listening on {}", bind_addr);
+        
         Ok(Self {
             server,
             transport,
