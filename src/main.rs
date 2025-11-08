@@ -8,6 +8,6 @@ mod renet_connection;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let mut server = RelayServer::new("127.0.0.1:8080".parse()?)?;
+    let mut server = RelayServer::new("0.0.0.0:8080".parse()?)?;
     server.run().await
 }

@@ -53,7 +53,7 @@ impl RelayServer {
                     self.handle_join_room(packet.renet_id, room_id);
                 }
                 PacketType::GameData(target_id, data) => {
-                    self.handle_game_data_raw(packet.renet_id, target_id, data, packet.channel);
+                    self.handle_game_data(packet.renet_id, target_id, data, packet.channel);
                 }
                 _ => {}
             }
@@ -78,7 +78,7 @@ impl RelayServer {
         println!("Client {} creating room", client_id);
 
         let mut room = Room::new(client_id.to_string(), client_id);
-        room.add_peer(1, client_id);
+        room.add_peer(client_id);
 
         self.renet_connection.send(
             client_id,
@@ -93,17 +93,17 @@ impl RelayServer {
         println!("Client {} joining room: {}", client_id, room_id);
 
         if let Some(room) = self.rooms.get_mut(&room_id) {
-            room.add_peer(2, client_id);
+            let godot_pid = room.add_peer(client_id);
 
             self.renet_connection.send(
                 client_id,
-                PacketType::ConnectedToRoom(room_id, 2).to_bytes(),
+                PacketType::ConnectedToRoom(room_id, godot_pid).to_bytes(),
                 DefaultChannel::ReliableOrdered
             );
 
             self.renet_connection.send(
                 room.get_host(),
-                PacketType::PeerJoinedRoom(2).to_bytes(),
+                PacketType::PeerJoinedRoom(godot_pid).to_bytes(),
                 DefaultChannel::ReliableOrdered
             );
         } else {
@@ -111,7 +111,7 @@ impl RelayServer {
         }
     }
 
-    fn handle_game_data_raw(&mut self, client_id: ClientId, target_id: i32, original_data: Vec<u8>, channel: DefaultChannel) {
+    fn handle_game_data(&mut self, client_id: ClientId, target_id: i32, original_data: Vec<u8>, channel: DefaultChannel) {
         for (_room_id, room) in &self.rooms {
             if let Some(sender_godot_id) = room.get_godot_id(client_id) {
                 if let Some(target_renet_id) = room.get_renet_id(target_id) {

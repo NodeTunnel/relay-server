@@ -7,6 +7,7 @@ pub struct Room {
     host_id: ClientId,
     godot_to_client: HashMap<i32, ClientId>,
     client_to_godot: HashMap<ClientId, i32>,
+    next_godot_id: i32,
 }
 
 impl Room {
@@ -16,12 +17,19 @@ impl Room {
             host_id,
             godot_to_client: HashMap::new(),
             client_to_godot: HashMap::new(),
+            next_godot_id: 1,
         }
     }
 
-    pub fn add_peer(&mut self, godot_pid: i32, client_id: ClientId) {
+    pub fn add_peer(&mut self, client_id: ClientId) -> i32 {
+        let godot_pid = self.next_godot_id;
+
         self.godot_to_client.insert(godot_pid, client_id);
         self.client_to_godot.insert(client_id, godot_pid);
+        
+        self.next_godot_id += 1;
+        
+        godot_pid
     }
     
     pub fn get_host(&self) -> ClientId {
