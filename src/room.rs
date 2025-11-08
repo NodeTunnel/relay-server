@@ -56,4 +56,8 @@ impl Room {
             None
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.client_to_godot.is_empty() && self.godot_to_client.is_empty()
+    }
 }

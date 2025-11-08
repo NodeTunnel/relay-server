@@ -5,12 +5,14 @@ use renet::{ClientId, DefaultChannel, ServerEvent};
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::SocketAddr;
+use std::process::exit;
 use std::time::{Duration};
 use tokio::time::sleep;
 
 pub struct RelayServer {
     renet_connection: RenetConnection,
     rooms: HashMap<String, Room>,
+    time_since_use: u64,
 }
 
 impl RelayServer {
@@ -18,13 +20,27 @@ impl RelayServer {
         Ok(Self {
             renet_connection: RenetConnection::new(addr)?,
             rooms: HashMap::new(),
+            time_since_use: 0
         })
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        println!("Relay listening on port 8080");
+        
         loop {
             self.update().await?;
             sleep(Duration::from_millis(16)).await;
+
+            if self.rooms.is_empty() {
+                self.time_since_use += 16;
+
+                if self.time_since_use > 60000 {
+                    println!("No active rooms, shutting down...");
+                    exit(0);
+                }
+            } else {
+                self.time_since_use = 0;
+            }
         }
     }
 
@@ -61,13 +77,24 @@ impl RelayServer {
             println!("Invalid packet from client {}", packet.renet_id);
         }
     }
-    
+
     fn process_event(&mut self, server_event: ServerEvent) {
-        match server_event { 
+        match server_event {
             ServerEvent::ClientDisconnected { client_id, reason } => {
-                for (_room_id, room) in &mut self.rooms {
+                let mut rooms_to_remove = Vec::new();
+
+                for (room_id, room) in &mut self.rooms {
                     println!("{} disconnected: {}", client_id, reason);
                     room.remove_peer(client_id);
+
+                    if room.is_empty() {
+                        rooms_to_remove.push(room_id.clone());
+                    }
+                }
+
+                for room_id in rooms_to_remove {
+                    println!("Destroying unused room {}", room_id);
+                    self.rooms.remove(&room_id);
                 }
             }
             _ => {}

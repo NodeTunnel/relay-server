@@ -7,6 +7,14 @@ app = 'relay-server'
 primary_region = 'iad'
 
 [build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8081
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 0
 
 [[services]]
   internal_port = 8080
@@ -16,7 +24,6 @@ primary_region = 'iad'
     port = 8080
 
 [[vm]]
-  memory = '512mb'
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 512
