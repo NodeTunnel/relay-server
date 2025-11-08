@@ -1,0 +1,22 @@
+# fly.toml app configuration file generated for relay-server on 2025-11-08T00:31:07Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'relay-server'
+primary_region = 'iad'
+
+[build]
+
+[[services]]
+  internal_port = 8080
+  protocol = "udp"
+
+  [[services.ports]]
+    port = 8080
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 512
