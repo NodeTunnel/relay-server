@@ -31,6 +31,14 @@ impl Room {
         
         godot_pid
     }
+
+    pub fn get_renet_ids(&self) -> impl Iterator<Item = ClientId> + '_ {
+        self.client_to_godot.keys().copied()
+    }
+
+    pub fn get_peers(&self) -> &HashMap<ClientId, i32> {
+        &self.client_to_godot
+    }
     
     pub fn get_host(&self) -> ClientId {
         self.host_id

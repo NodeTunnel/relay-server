@@ -82,19 +82,50 @@ impl RelayServer {
     fn process_event(&mut self, server_event: ServerEvent) {
         match server_event {
             ServerEvent::ClientDisconnected { client_id, reason } => {
+                println!("{} disconnected: {}", client_id, reason);
                 let mut rooms_to_remove = Vec::new();
 
                 for (room_id, room) in &mut self.rooms {
-                    println!("{} disconnected: {}", client_id, reason);
-                    room.remove_peer(client_id);
-
-                    if room.is_empty() {
-                        rooms_to_remove.push(room_id.clone());
+                    if !room.contains_renet_id(client_id) {
+                        continue;
                     }
+
+                    let godot_id = room.get_godot_id(client_id).unwrap();
+                    let is_host = room.get_host() == client_id;
+
+                    if is_host {
+                        let peer_ids: Vec<ClientId> = room.get_renet_ids()
+                            .filter(|&renet_id| renet_id != client_id)
+                            .collect();
+
+                        for other_renet_id in peer_ids {
+                            self.renet_connection.send(
+                                other_renet_id,
+                                PacketType::ForceDisconnect().to_bytes(),
+                                DefaultChannel::ReliableOrdered,
+                            );
+                        }
+
+                        rooms_to_remove.push(room_id.clone());
+                    } else {
+                        self.renet_connection.send(
+                            room.get_host(),
+                            PacketType::PeerLeftRoom(godot_id).to_bytes(),
+                            DefaultChannel::ReliableOrdered,
+                        );
+
+                        room.remove_peer(client_id);
+
+                        if room.is_empty() {
+                            rooms_to_remove.push(room_id.clone());
+                        }
+                    }
+
+                    break; // Client can only be in one room
                 }
 
                 for room_id in rooms_to_remove {
-                    println!("Destroying unused room {}", room_id);
+                    println!("Destroying room {}", room_id);
                     self.rooms.remove(&room_id);
                 }
             }
