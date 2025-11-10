@@ -14,6 +14,9 @@ pub struct ServerConfig {
     #[serde(default = "defaults::udp_bind_address")]
     pub udp_bind_address: String,
 
+    #[serde(default = "defaults::public_udp_address")]
+    pub public_udp_address: String,
+
     #[serde(default = "defaults::http_bind_address")]
     pub http_bind_address: String,
 }
@@ -50,6 +53,7 @@ pub(crate) fn load_config() -> Result<Config, Box<dyn Error>> {
 
 mod defaults {
     pub fn udp_bind_address() -> String { "0.0.0.0:8080".to_string() }
+    pub fn public_udp_address() -> String { "127.0.0.1:8080".to_string() }
     pub fn http_bind_address() -> String { "".to_string() }
     pub fn registry_address() -> String { "".to_string() }
     pub fn auto_shutdown() -> bool { false }

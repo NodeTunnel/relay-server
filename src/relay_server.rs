@@ -174,9 +174,11 @@ impl RelayServer {
             return Err(format!("{} attempted to create a room before connecting!", client_id).into());
         };
 
+        let cfg = CONFIG.get().unwrap();
+
         println!("Client {} creating room", client_id);
 
-        let id = self.pocketbase_client.register_room("127.0.0.1:8080", &client_session.game_id).await?;
+        let id = self.pocketbase_client.register_room(&cfg.server.public_udp_address, &client_session.game_id).await?;
 
         let mut room = Room::new(id.clone(), client_id);
 
