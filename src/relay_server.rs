@@ -66,7 +66,7 @@ impl RelayServer {
         }
         
         for event in events {
-            self.process_event(event)
+            self.process_event(event).await?;
         }
 
         Ok(())
@@ -100,7 +100,7 @@ impl RelayServer {
         }
     }
 
-    fn process_event(&mut self, server_event: ServerEvent) {
+    async fn process_event(&mut self, server_event: ServerEvent) -> Result<(), Box<dyn Error>> {
         match server_event {
             ServerEvent::ClientDisconnected { client_id, reason } => {
                 println!("{} disconnected: {}", client_id, reason);
@@ -148,9 +148,14 @@ impl RelayServer {
                 for room_id in rooms_to_remove {
                     println!("Destroying room {}", room_id);
                     self.rooms.remove(&room_id);
+                    self.pocketbase_client.remove_room(&room_id).await?;
                 }
+
+                Ok(())
             }
-            _ => {}
+            _ => {
+                Ok(())
+            }
         }
     }
 
@@ -171,7 +176,10 @@ impl RelayServer {
 
         println!("Client {} creating room", client_id);
 
-        let mut room = Room::new(client_id.to_string(), client_id);
+        let id = self.pocketbase_client.register_room("127.0.0.1:8080", &client_session.game_id).await?;
+
+        let mut room = Room::new(id.clone(), client_id);
+
         room.add_peer(client_id);
 
         self.renet_connection.send(
@@ -180,8 +188,7 @@ impl RelayServer {
             DefaultChannel::ReliableOrdered
         );
 
-        self.pocketbase_client.register_room(&room.id, "127.0.0.1:8080", &client_session.game_id).await?;
-        self.rooms.insert(client_id.to_string(), room);
+        self.rooms.insert(id, room);
 
         Ok(())
     }

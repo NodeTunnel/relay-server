@@ -49,7 +49,6 @@ impl PocketBaseClient {
 
     pub async fn register_room(
         &self,
-        room_id: &str,
         relay_address: &str,
         game_id: &str
     ) -> Result<String, Box<dyn Error>> {
@@ -59,7 +58,6 @@ impl PocketBaseClient {
         );
 
         let body = serde_json::json!({
-        "room_id": room_id,
         "relay_address": relay_address,
         "game": game_id
         });
@@ -82,5 +80,17 @@ impl PocketBaseClient {
             .to_string();
 
         Ok(record_id)
+    }
+
+    pub async fn remove_room(&self, room_id: &str) -> Result<(), Box<dyn Error>> {
+        let url = format!("{}/api/collections/rooms/records/{}", self.base_url, room_id);
+        let response = self.client.delete(&url).send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(format!("Failed to remove room: {}", error_text).into());
+        }
+
+        Ok(())
     }
 }
