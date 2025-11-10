@@ -6,6 +6,7 @@ use std::fs;
 pub struct Config {
     pub server: ServerConfig,
     pub relay: RelayConfig,
+    pub registry: RegistryConfig,
 }
 
 #[derive(Deserialize, Debug)]
@@ -21,6 +22,12 @@ pub struct ServerConfig {
 pub struct RelayConfig {
     #[serde(default = "defaults::auto_shutdown")]
     pub auto_shutdown: bool,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct RegistryConfig {
+    #[serde(default = "defaults::registry_address")]
+    pub registry_address: String,
 }
 
 pub(crate) fn load_config() -> Result<Config, Box<dyn Error>> {
@@ -44,5 +51,6 @@ pub(crate) fn load_config() -> Result<Config, Box<dyn Error>> {
 mod defaults {
     pub fn udp_bind_address() -> String { "0.0.0.0:8080".to_string() }
     pub fn http_bind_address() -> String { "".to_string() }
+    pub fn registry_address() -> String { "".to_string() }
     pub fn auto_shutdown() -> bool { false }
 }

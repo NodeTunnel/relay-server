@@ -11,6 +11,7 @@ mod relay_server;
 mod renet_connection;
 mod version;
 mod config;
+mod pocketbase_client;
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 

@@ -3,3 +3,6 @@ udp_bind_address = "0.0.0.0:8080"
 
 [relay]
 auto_shutdown = false
+
+[registry]
+registry_address = "http://127.0.0.1:8090"

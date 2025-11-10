@@ -9,18 +9,30 @@ use std::process::exit;
 use std::time::{Duration};
 use tokio::time::sleep;
 use crate::CONFIG;
+use crate::pocketbase_client::PocketBaseClient;
+
+struct ClientSession {
+    renet_id: ClientId,
+    game_id: String,
+}
 
 pub struct RelayServer {
+    pocketbase_client: PocketBaseClient,
     renet_connection: RenetConnection,
     rooms: HashMap<String, Room>,
+    client_sessions: HashMap<ClientId, ClientSession>,
     time_since_use: u64,
 }
 
 impl RelayServer {
     pub fn new(addr: SocketAddr) -> Result<Self, Box<dyn Error>> {
+        let cfg = CONFIG.get().unwrap();
+
         Ok(Self {
+            pocketbase_client: PocketBaseClient::new(cfg.registry.registry_address.clone()),
             renet_connection: RenetConnection::new(addr)?,
             rooms: HashMap::new(),
+            client_sessions: HashMap::new(),
             time_since_use: 0,
         })
     }
@@ -50,7 +62,7 @@ impl RelayServer {
         let events = self.renet_connection.receive_events()?;
 
         for packet in packets {
-            self.process_packet(packet);
+            self.process_packet(packet).await?;
         }
         
         for event in events {
@@ -60,22 +72,31 @@ impl RelayServer {
         Ok(())
     }
 
-    fn process_packet(&mut self, packet: Packet) {
+    async fn process_packet(&mut self, packet: Packet) -> Result<(), Box<dyn Error>> {
         if let Ok(packet_type) = PacketType::from_bytes(packet.data) {
             match packet_type {
+                PacketType::Connect(game_id) => {
+                    self.handle_connect(packet.renet_id, game_id);
+                    Ok(())
+                }
                 PacketType::CreateRoom => {
-                    self.handle_create_room(packet.renet_id);
+                    self.handle_create_room(packet.renet_id).await?;
+                    Ok(())
                 }
                 PacketType::JoinRoom(room_id) => {
                     self.handle_join_room(packet.renet_id, room_id);
+                    Ok(())
                 }
                 PacketType::GameData(target_id, data) => {
                     self.handle_game_data(packet.renet_id, target_id, data, packet.channel);
+                    Ok(())
                 }
-                _ => {}
+                _ => {
+                    Ok(())
+                }
             }
         } else {
-            println!("Invalid packet from client {}", packet.renet_id);
+            Err(format!("Invalid packet from client {}", packet.renet_id).into())
         }
     }
 
@@ -121,7 +142,7 @@ impl RelayServer {
                         }
                     }
 
-                    break; // Client can only be in one room
+                    break;
                 }
 
                 for room_id in rooms_to_remove {
@@ -133,7 +154,21 @@ impl RelayServer {
         }
     }
 
-    fn handle_create_room(&mut self, client_id: ClientId) {
+    fn handle_connect(&mut self, renet_id: ClientId, game_id: String) {
+        self.client_sessions.insert(
+            renet_id,
+            ClientSession {
+                renet_id,
+                game_id
+            }
+        );
+    }
+
+    async fn handle_create_room(&mut self, client_id: ClientId) -> Result<(), Box<dyn Error>> {
+        let Some(client_session) = self.client_sessions.get(&client_id) else {
+            return Err(format!("{} attempted to create a room before connecting!", client_id).into());
+        };
+
         println!("Client {} creating room", client_id);
 
         let mut room = Room::new(client_id.to_string(), client_id);
@@ -145,7 +180,10 @@ impl RelayServer {
             DefaultChannel::ReliableOrdered
         );
 
+        self.pocketbase_client.register_room(&room.id, "127.0.0.1:8080", &client_session.game_id).await?;
         self.rooms.insert(client_id.to_string(), room);
+
+        Ok(())
     }
 
     fn handle_join_room(&mut self, client_id: ClientId, room_id: String) {
