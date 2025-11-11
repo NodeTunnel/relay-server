@@ -5,15 +5,19 @@ use renet::{ClientId, DefaultChannel, ServerEvent};
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::SocketAddr;
-use std::process::exit;
 use std::time::{Duration};
 use tokio::time::sleep;
 use crate::CONFIG;
 
+struct ClientSession {
+    app_id: String,
+    renet_id: String,
+}
+
 pub struct RelayServer {
     renet_connection: RenetConnection,
     rooms: HashMap<String, Room>,
-    time_since_use: u64,
+    clients: HashMap<ClientId, ClientSession>,
 }
 
 impl RelayServer {
@@ -21,27 +25,14 @@ impl RelayServer {
         Ok(Self {
             renet_connection: RenetConnection::new(addr)?,
             rooms: HashMap::new(),
-            time_since_use: 0,
+            clients: HashMap::new(),
         })
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        let cfg = CONFIG.get().unwrap();
-        
         loop {
             self.update().await?;
             sleep(Duration::from_millis(16)).await;
-
-            if self.rooms.is_empty() && cfg.relay.auto_shutdown {
-                self.time_since_use += 16;
-
-                if self.time_since_use > 60000 {
-                    println!("No active rooms, shutting down...");
-                    exit(0);
-                }
-            } else {
-                self.time_since_use = 0;
-            }
         }
     }
 
@@ -71,6 +62,9 @@ impl RelayServer {
                 }
                 PacketType::GameData(target_id, data) => {
                     self.handle_game_data(packet.renet_id, target_id, data, packet.channel);
+                }
+                PacketType::Authenticate(app_id) => {
+                    self.handle_authenticate(packet.renet_id, app_id);
                 }
                 _ => {}
             }
@@ -121,7 +115,7 @@ impl RelayServer {
                         }
                     }
 
-                    break; // Client can only be in one room
+                    break;
                 }
 
                 for room_id in rooms_to_remove {
@@ -131,6 +125,30 @@ impl RelayServer {
             }
             _ => {}
         }
+    }
+
+    fn handle_authenticate(&mut self, client_id: ClientId, app_id: String) {
+        let cfg = CONFIG.get().unwrap();
+
+        if !cfg.server.app_whitelist.is_empty() && !cfg.server.app_whitelist.contains(&app_id) {
+            self.renet_connection.send(
+                client_id,
+                PacketType::ForceDisconnect().to_bytes(),
+                DefaultChannel::ReliableOrdered,
+            );
+            return;
+        }
+
+        self.clients.insert(client_id, ClientSession {
+            app_id: app_id.clone(),
+            renet_id: client_id.to_string(),
+        });
+
+        self.renet_connection.send(
+            client_id,
+            PacketType::ClientAuthenticated().to_bytes(),
+            DefaultChannel::ReliableOrdered,
+        );
     }
 
     fn handle_create_room(&mut self, client_id: ClientId) {

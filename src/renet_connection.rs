@@ -85,8 +85,4 @@ impl RenetConnection {
         self.server.send_message(target, channel, data);
         self.transport.send_packets(&mut self.server);
     }
-
-    pub fn close(&mut self) {
-        self.server.disconnect_all();
-    }
 }
