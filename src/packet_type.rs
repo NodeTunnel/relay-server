@@ -10,6 +10,8 @@ pub enum PacketType {
     PeerJoinedRoom(i32),
     PeerLeftRoom(i32),
     ForceDisconnect(),
+    Authenticate(String),
+    ClientAuthenticated(),
 }
 
 impl PacketType {
@@ -81,6 +83,13 @@ impl PacketType {
             6 => {
                 Ok(PacketType::ForceDisconnect())
             }
+            7 => {
+                let app_id = String::from_utf8(bytes[1..].to_vec())?;
+                Ok(PacketType::Authenticate(app_id))
+            }
+            8 => {
+                Ok(PacketType::ClientAuthenticated())
+            }
             _ => Err(format!("Unknown packet type: {}", bytes[0]).into()),
         }
     }
@@ -116,6 +125,12 @@ impl PacketType {
                 result
             },
             PacketType::ForceDisconnect() => vec![6],
+            PacketType::Authenticate(app_id) => {
+                let mut result = vec![7];
+                result.extend(app_id.as_bytes());
+                result
+            }
+            PacketType::ClientAuthenticated() => vec![8],
         }
     }
 }

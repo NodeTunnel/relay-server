@@ -5,7 +5,6 @@ use std::fs;
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub server: ServerConfig,
-    pub relay: RelayConfig,
 }
 
 #[derive(Deserialize, Debug)]
@@ -13,14 +12,8 @@ pub struct ServerConfig {
     #[serde(default = "defaults::udp_bind_address")]
     pub udp_bind_address: String,
 
-    #[serde(default = "defaults::http_bind_address")]
-    pub http_bind_address: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct RelayConfig {
-    #[serde(default = "defaults::auto_shutdown")]
-    pub auto_shutdown: bool,
+    #[serde(default = "defaults::app_whitelist")]
+    pub app_whitelist: Vec<String>,
 }
 
 pub(crate) fn load_config() -> Result<Config, Box<dyn Error>> {
@@ -43,6 +36,5 @@ pub(crate) fn load_config() -> Result<Config, Box<dyn Error>> {
 
 mod defaults {
     pub fn udp_bind_address() -> String { "0.0.0.0:8080".to_string() }
-    pub fn http_bind_address() -> String { "".to_string() }
-    pub fn auto_shutdown() -> bool { false }
+    pub fn app_whitelist() -> Vec<String> { vec![] }
 }
