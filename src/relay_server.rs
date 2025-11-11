@@ -13,7 +13,7 @@ use crate::pocketbase_client::PocketBaseClient;
 
 struct ClientSession {
     renet_id: ClientId,
-    game_id: String,
+    app_id: String,
 }
 
 pub struct RelayServer {
@@ -75,8 +75,8 @@ impl RelayServer {
     async fn process_packet(&mut self, packet: Packet) -> Result<(), Box<dyn Error>> {
         if let Ok(packet_type) = PacketType::from_bytes(packet.data) {
             match packet_type {
-                PacketType::Connect(game_id) => {
-                    self.handle_connect(packet.renet_id, game_id);
+                PacketType::Connect(app_id) => {
+                    self.authenticate_client(packet.renet_id, app_id);
                     Ok(())
                 }
                 PacketType::CreateRoom => {
@@ -159,12 +159,12 @@ impl RelayServer {
         }
     }
 
-    fn handle_connect(&mut self, renet_id: ClientId, game_id: String) {
+    fn authenticate_client(&mut self, renet_id: ClientId, app_id: String) {
         self.client_sessions.insert(
             renet_id,
             ClientSession {
                 renet_id,
-                game_id
+                app_id
             }
         );
     }
@@ -178,7 +178,7 @@ impl RelayServer {
 
         println!("Client {} creating room", client_id);
 
-        let id = self.pocketbase_client.register_room(&cfg.server.public_udp_address, &client_session.game_id).await?;
+        let id = self.pocketbase_client.register_room(&cfg.server.public_udp_address, &client_session.app_id).await?;
 
         let mut room = Room::new(id.clone(), client_id);
 

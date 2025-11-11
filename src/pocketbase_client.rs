@@ -50,7 +50,7 @@ impl PocketBaseClient {
     pub async fn register_room(
         &self,
         relay_address: &str,
-        game_id: &str
+        app_id: &str
     ) -> Result<String, Box<dyn Error>> {
         let url = format!(
             "{}/api/collections/rooms/records",
@@ -59,7 +59,7 @@ impl PocketBaseClient {
 
         let body = serde_json::json!({
         "relay_address": relay_address,
-        "game": game_id
+        "game": app_id
         });
 
         let response = self.client

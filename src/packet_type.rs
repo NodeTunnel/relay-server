@@ -83,8 +83,8 @@ impl PacketType {
                 Ok(PacketType::ForceDisconnect())
             }
             7 => {
-                let game_id = String::from_utf8(bytes[1..].to_vec())?;
-                Ok(PacketType::Connect(game_id))
+                let app_id = String::from_utf8(bytes[1..].to_vec())?;
+                Ok(PacketType::Connect(app_id))
             }
             _ => Err(format!("Unknown packet type: {}", bytes[0]).into()),
         }
@@ -121,9 +121,9 @@ impl PacketType {
                 result
             },
             PacketType::ForceDisconnect() => vec![6],
-            PacketType::Connect(game_id) => {
+            PacketType::Connect(app_id) => {
                 let mut result = vec![7];
-                result.extend(game_id.as_bytes());
+                result.extend(app_id.as_bytes());
                 result
             }
         }
