@@ -3,6 +3,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::OnceLock;
 use warp::Filter;
 use crate::config::{load_config, Config};
+use crate::latency_check::LatencyCheck;
 use crate::relay_server::RelayServer;
 
 mod packet_type;
@@ -12,6 +13,7 @@ mod renet_connection;
 mod version;
 mod config;
 mod pocketbase_client;
+mod latency_check;
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
@@ -22,27 +24,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let cfg = CONFIG.get().unwrap();
 
-    if !cfg.server.http_bind_address.is_empty() {
-        let ready = warp::path!("ready").map(|| {
-            warp::reply::json(&serde_json::json!({
-                "status": "ready",
-            }))
-        });
-
-        let addr: SocketAddr = cfg.server.http_bind_address
-            .to_socket_addrs()?
-            .next()
-            .ok_or("Failed to resolve host name")?;
-
-        println!("HTTP server listening on {}", addr);
-
-        tokio::spawn(warp::serve(ready).run(addr));
-    }
-
     let addr: SocketAddr = cfg.server.udp_bind_address
         .to_socket_addrs()?
         .next()
         .ok_or("Failed to resolve host name")?;
+
+    let latency_check = LatencyCheck::new("0.0.0.0:8081").await?;
+
+    tokio::spawn(async move {
+        if let Err(e) = latency_check.run().await {
+            eprintln!("LatencyCheck error: {e}");
+        }
+    });
 
     let mut server = RelayServer::new(addr)?;
     server.run().await
