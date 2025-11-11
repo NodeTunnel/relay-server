@@ -7,4 +7,4 @@ http_bind_address = "0.0.0.0:8081"
 auto_shutdown = false
 
 [registry]
-registry_address = "https://nodetunnel-db.fly.dev:8090"
+registry_address = "https://nodetunnel-db.fly.dev"
