@@ -1,0 +1,10 @@
+[server]
+udp_bind_address = "0.0.0.0:8080"
+public_udp_address = "relay-server.fly.dev:8080"
+http_bind_address = "0.0.0.0:8081"
+
+[relay]
+auto_shutdown = true
+
+[registry]
+registry_address = "https://nodetunnel-db.fly.dev"
