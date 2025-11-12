@@ -7,6 +7,7 @@ use std::error::Error;
 use std::net::SocketAddr;
 use std::time::{Duration};
 use tokio::time::sleep;
+use crate::app::App;
 use crate::CONFIG;
 
 struct ClientSession {
@@ -16,16 +17,16 @@ struct ClientSession {
 
 pub struct RelayServer {
     renet_connection: RenetConnection,
-    rooms: HashMap<String, Room>,
-    clients: HashMap<ClientId, ClientSession>,
+    app_sessions: HashMap<String, App>,
+    client_sessions: HashMap<ClientId, ClientSession>,
 }
 
 impl RelayServer {
     pub fn new(addr: SocketAddr) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
             renet_connection: RenetConnection::new(addr)?,
-            rooms: HashMap::new(),
-            clients: HashMap::new(),
+            client_sessions: HashMap::new(),
+            app_sessions: HashMap::new(),
         })
     }
 
@@ -79,7 +80,17 @@ impl RelayServer {
                 println!("{} disconnected: {}", client_id, reason);
                 let mut rooms_to_remove = Vec::new();
 
-                for (room_id, room) in &mut self.rooms {
+                let Some(client_session) = self.client_sessions.get_mut(&client_id) else {
+                    println!("Client {} attempted to disconnect without authenticating", client_id);
+                    return;
+                };
+
+                let Some(app) = self.app_sessions.get_mut(&client_session.app_id) else {
+                    println!("Client {} attempted to disconnect with an invalid app id", client_id);
+                    return;
+                };
+
+                for (room_id, room) in app.get_rooms() {
                     if !room.contains_renet_id(client_id) {
                         continue;
                     }
@@ -120,8 +131,14 @@ impl RelayServer {
 
                 for room_id in rooms_to_remove {
                     println!("Destroying room {}", room_id);
-                    self.rooms.remove(&room_id);
+                    app.remove_room(&room_id);
                 }
+
+                if app.get_rooms().is_empty() {
+                    println!("Destroying app {}", client_session.app_id);
+                    self.app_sessions.remove(&client_session.app_id);
+                }
+                self.client_sessions.remove(&client_id);
             }
             _ => {}
         }
@@ -139,7 +156,11 @@ impl RelayServer {
             return;
         }
 
-        self.clients.insert(client_id, ClientSession {
+        if !self.app_sessions.contains_key(&app_id) {
+            self.app_sessions.insert(app_id.clone(), App::new(app_id.clone()));
+        }
+
+        self.client_sessions.insert(client_id, ClientSession {
             app_id: app_id.clone(),
             renet_id: client_id.to_string(),
         });
@@ -151,8 +172,19 @@ impl RelayServer {
         );
     }
 
+    // TODO: Unauthorized packet
     fn handle_create_room(&mut self, client_id: ClientId) {
         println!("Client {} creating room", client_id);
+
+        let Some(client_session) = self.client_sessions.get_mut(&client_id) else {
+            println!("Client {} attempted to create a room without authenticating", client_id);
+            return;
+        };
+
+        let Some(app) = self.app_sessions.get_mut(&client_session.app_id) else {
+            println!("Client {} attempted to create a room with an invalid app id", client_id);
+            return;
+        };
 
         let mut room = Room::new(client_id.to_string(), client_id);
         room.add_peer(client_id);
@@ -163,13 +195,23 @@ impl RelayServer {
             DefaultChannel::ReliableOrdered
         );
 
-        self.rooms.insert(client_id.to_string(), room);
+        app.add_room(room);
     }
 
     fn handle_join_room(&mut self, client_id: ClientId, room_id: String) {
         println!("Client {} joining room: {}", client_id, room_id);
 
-        if let Some(room) = self.rooms.get_mut(&room_id) {
+        let Some(client_session) = self.client_sessions.get_mut(&client_id) else {
+            println!("Client {} attempted to join a room without authenticating", client_id);
+            return;
+        };
+
+        let Some(app) = self.app_sessions.get_mut(&client_session.app_id) else {
+            println!("Client {} attempted to join a room with an invalid app id", client_id);
+            return;
+        };
+
+        if let Some(room) = app.get_room(&room_id) {
             let godot_pid = room.add_peer(client_id);
 
             self.renet_connection.send(
@@ -189,7 +231,17 @@ impl RelayServer {
     }
 
     fn handle_game_data(&mut self, client_id: ClientId, target_id: i32, original_data: Vec<u8>, channel: DefaultChannel) {
-        for (_room_id, room) in &self.rooms {
+        let Some(client_session) = self.client_sessions.get_mut(&client_id) else {
+            println!("Client {} attempted to send game data without authenticating", client_id);
+            return;
+        };
+
+        let Some(app) = self.app_sessions.get_mut(&client_session.app_id) else {
+            println!("Client {} attempted to send game data with an invalid app id", client_id);
+            return;
+        };
+
+        for (_room_id, room) in app.get_rooms() {
             if let Some(sender_godot_id) = room.get_godot_id(client_id) {
                 if let Some(target_renet_id) = room.get_renet_id(target_id) {
                     let packet = PacketType::GameData(sender_godot_id, original_data).to_bytes();

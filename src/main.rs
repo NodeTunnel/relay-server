@@ -10,6 +10,7 @@ mod relay_server;
 mod renet_connection;
 mod version;
 mod config;
+mod app;
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
