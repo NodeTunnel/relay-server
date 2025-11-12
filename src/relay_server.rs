@@ -113,11 +113,17 @@ impl RelayServer {
 
                         rooms_to_remove.push(room_id.clone());
                     } else {
-                        self.renet_connection.send(
-                            room.get_host(),
-                            PacketType::PeerLeftRoom(godot_id).to_bytes(),
-                            DefaultChannel::ReliableOrdered,
-                        );
+                        for other_renet_id in room.get_renet_ids() {
+                            if other_renet_id == client_id {
+                                continue;
+                            }
+
+                            self.renet_connection.send(
+                                other_renet_id,
+                                PacketType::PeerLeftRoom(godot_id).to_bytes(),
+                                DefaultChannel::ReliableOrdered,
+                            );
+                        }
 
                         room.remove_peer(client_id);
 
@@ -212,19 +218,41 @@ impl RelayServer {
         };
 
         if let Some(room) = app.get_room(&room_id) {
+            let existing_peers: Vec<i32> = room.get_peers()
+                .values()
+                .copied()
+                .collect();
+
             let godot_pid = room.add_peer(client_id);
 
+            // Send the new client the room id and godot pid
             self.renet_connection.send(
                 client_id,
-                PacketType::ConnectedToRoom(room_id, godot_pid).to_bytes(),
+                PacketType::ConnectedToRoom(room_id.clone(), godot_pid).to_bytes(),
                 DefaultChannel::ReliableOrdered
             );
 
-            self.renet_connection.send(
-                room.get_host(),
-                PacketType::PeerJoinedRoom(godot_pid).to_bytes(),
-                DefaultChannel::ReliableOrdered
-            );
+            // Tell the new client about existing peers
+            for existing_godot_id in existing_peers.iter() {
+                self.renet_connection.send(
+                    client_id,
+                    PacketType::PeerJoinedRoom(*existing_godot_id).to_bytes(),
+                    DefaultChannel::ReliableOrdered,
+                );
+            }
+
+            // Notify existing clients about the new peer
+            for other_renet_id in room.get_renet_ids() {
+                if other_renet_id == client_id {
+                    continue;
+                }
+
+                self.renet_connection.send(
+                    other_renet_id,
+                    PacketType::PeerJoinedRoom(godot_pid).to_bytes(),
+                    DefaultChannel::ReliableOrdered,
+                );
+            }
         } else {
             println!("Client attempted to join an invalid room")
         }
