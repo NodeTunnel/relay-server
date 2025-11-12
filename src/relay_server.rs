@@ -7,41 +7,12 @@ use std::error::Error;
 use std::net::SocketAddr;
 use std::time::{Duration};
 use tokio::time::sleep;
+use crate::app::App;
 use crate::CONFIG;
 
 struct ClientSession {
     app_id: String,
     renet_id: String,
-}
-
-struct App {
-    id: String,
-    rooms: HashMap<String, Room>,
-}
-
-impl App {
-    fn new(id: String) -> Self {
-        Self {
-            id,
-            rooms: HashMap::new(),
-        }
-    }
-
-    fn add_room(&mut self, room: Room) {
-        self.rooms.insert(room.id.clone(), room);
-    }
-
-    fn get_room(&mut self, id: &str) -> Option<&mut Room> {
-        self.rooms.get_mut(id)
-    }
-
-    fn get_rooms(&mut self) -> &mut HashMap<String, Room> {
-        &mut self.rooms
-    }
-
-    fn remove_room(&mut self, id: &str) -> Option<Room> {
-        self.rooms.remove(id)
-    }
 }
 
 pub struct RelayServer {
@@ -163,7 +134,7 @@ impl RelayServer {
                     app.remove_room(&room_id);
                 }
 
-                if app.rooms.is_empty() {
+                if app.get_rooms().is_empty() {
                     println!("Destroying app {}", client_session.app_id);
                     self.app_sessions.remove(&client_session.app_id);
                 }
@@ -270,7 +241,7 @@ impl RelayServer {
             return;
         };
 
-        for (_room_id, room) in &app.rooms {
+        for (_room_id, room) in app.get_rooms() {
             if let Some(sender_godot_id) = room.get_godot_id(client_id) {
                 if let Some(target_renet_id) = room.get_renet_id(target_id) {
                     let packet = PacketType::GameData(sender_godot_id, original_data).to_bytes();
