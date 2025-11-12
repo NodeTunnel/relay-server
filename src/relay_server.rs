@@ -162,6 +162,12 @@ impl RelayServer {
                     println!("Destroying room {}", room_id);
                     app.remove_room(&room_id);
                 }
+
+                if app.rooms.is_empty() {
+                    println!("Destroying app {}", client_session.app_id);
+                    self.app_sessions.remove(&client_session.app_id);
+                }
+                self.client_sessions.remove(&client_id);
             }
             _ => {}
         }
