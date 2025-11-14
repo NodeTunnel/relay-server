@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::OnceLock;
-use crate::config::{load_config, Config};
+use crate::config::loader::Config;
 use crate::relay_server::RelayServer;
 
 mod packet_type;
@@ -11,17 +11,20 @@ mod renet_connection;
 mod version;
 mod config;
 mod app;
+mod transport;
+mod protocol;
+mod game;
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = load_config()?;
+    let config = config::load_config("config.toml")?;
     CONFIG.set(config).expect("Failed to set config");
 
     let cfg = CONFIG.get().unwrap();
 
-    let addr: SocketAddr = cfg.server.udp_bind_address
+    let addr: SocketAddr = cfg.udp_bind_address
         .to_socket_addrs()?
         .next()
         .ok_or("Failed to resolve host name")?;

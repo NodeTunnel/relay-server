@@ -147,7 +147,7 @@ impl RelayServer {
     fn handle_authenticate(&mut self, client_id: ClientId, app_id: String) {
         let cfg = CONFIG.get().unwrap();
 
-        if !cfg.server.app_whitelist.is_empty() && !cfg.server.app_whitelist.contains(&app_id) {
+        if !cfg.app_whitelist.is_empty() && !cfg.app_whitelist.contains(&app_id) {
             self.renet_connection.send(
                 client_id,
                 PacketType::ForceDisconnect().to_bytes(),
