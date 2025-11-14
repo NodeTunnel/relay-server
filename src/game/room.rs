@@ -15,33 +15,31 @@ impl Room {
         Self {
             id,
             host_id,
-            godot_to_client: HashMap::new(),
             client_to_godot: HashMap::new(),
+            godot_to_client: HashMap::new(),
             next_godot_id: 1,
         }
     }
 
     pub fn add_peer(&mut self, client_id: ClientId) -> i32 {
         let godot_pid = self.next_godot_id;
-
-        self.godot_to_client.insert(godot_pid, client_id);
         self.client_to_godot.insert(client_id, godot_pid);
-        
+        self.godot_to_client.insert(godot_pid, client_id);
         self.next_godot_id += 1;
-        
-        godot_pid
-    }
 
-    pub fn get_renet_ids(&self) -> impl Iterator<Item = ClientId> + '_ {
-        self.client_to_godot.keys().copied()
+        godot_pid
     }
 
     pub fn get_peers(&self) -> &HashMap<ClientId, i32> {
         &self.client_to_godot
     }
-    
-    pub fn get_host(&self) -> ClientId {
-        self.host_id
+
+    pub fn get_renet_ids(&self) -> Vec<ClientId> {
+        self.client_to_godot.keys().copied().collect()
+    }
+
+    pub fn get_godot_ids(&self) -> Vec<i32> {
+        self.godot_to_client.keys().copied().collect()
     }
 
     pub fn get_godot_id(&self, client_id: ClientId) -> Option<i32> {
@@ -52,20 +50,19 @@ impl Room {
         self.godot_to_client.get(&godot_id).copied()
     }
 
-    pub fn contains_renet_id(&self, renet_id: ClientId) -> bool {
-        self.client_to_godot.contains_key(&renet_id)
+    pub fn get_host(&self) -> ClientId {
+        self.host_id
     }
 
-    pub fn remove_peer(&mut self, renet_id: ClientId) -> Option<i32> {
-        if let Some(godot_id) = self.client_to_godot.remove(&renet_id) {
-            self.godot_to_client.remove(&godot_id);
-            Some(godot_id)
-        } else {
-            None
-        }
+    pub fn remove_peer(&mut self, renet_id: ClientId) {
+        let Some(peer_id) = self.client_to_godot.remove(&renet_id) else {
+            return;
+        };
+
+        self.godot_to_client.remove(&peer_id);
     }
 
     pub fn is_empty(&self) -> bool {
-        self.client_to_godot.is_empty() && self.godot_to_client.is_empty()
+        self.client_to_godot.is_empty()
     }
 }
