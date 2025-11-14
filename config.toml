@@ -1,3 +1,2 @@
-[server]
 udp_bind_address = "0.0.0.0:8080"
 app_whitelist = ["nodetunnel_demo"]
