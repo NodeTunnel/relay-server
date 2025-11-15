@@ -265,17 +265,6 @@ impl GameServer {
     }
 
     fn handle_disconnect(&mut self, client_id: ClientId) {
-        println!("=== DISCONNECT EVENT ===");
-        println!("Client ID: {}", client_id);
-        if let Some((app_id, room_id)) = self.client_to_room.get(&client_id) {
-            println!("Was in room: {} (app: {})", room_id, app_id);
-            if let Some(app) = self.apps.get_mut(app_id) {
-                if let Some(room) = app.get_room(room_id) {
-                    println!("Is host: {}", room.get_host() == client_id);
-                }
-            }
-        }
-
         let Some(session) = self.sessions.remove(&client_id) else {
             warn!("Client {} disconnected without authenticating", client_id);
             return;
