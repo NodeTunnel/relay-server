@@ -40,6 +40,8 @@ impl RenetTransport {
         self.transport.update(delta_time, &mut self.server)
             .map_err(TransportError::NetcodeUpdateFailed)?;
 
+        self.transport.send_packets(&mut self.server);
+        
         Ok(())
     }
 
