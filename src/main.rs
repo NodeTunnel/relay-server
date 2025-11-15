@@ -23,5 +23,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let transport = RenetTransport::new(addr, 100)?;
 
     let mut server = GameServer::new(transport, config);
-    server.run(Duration::from_millis(16)).await
+    server.run(Duration::from_millis(4)).await
 }
