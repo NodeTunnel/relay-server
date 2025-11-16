@@ -59,8 +59,8 @@ impl GameServer {
 
     fn handle_packet(&mut self, packet: Packet) {
         match PacketType::from_bytes(&packet.data) {
-            Ok(PacketType::Authenticate { app_id }) => {
-                self.authenticate_client(packet.client_id, app_id);
+            Ok(PacketType::Authenticate { app_id, version }) => {
+                self.authenticate_client(packet.client_id, app_id, version);
             }
             Ok(packet_type) => {
                 if !self.sessions.contains_key(&packet.client_id) {
@@ -138,7 +138,7 @@ impl GameServer {
 
     /// Handlers
 
-    fn authenticate_client(&mut self, sender_id: ClientId, app_id: String) {
+    fn authenticate_client(&mut self, sender_id: ClientId, app_id: String, version: String) {
         if !self.config.app_whitelist.is_empty() && !self.config.app_whitelist.contains(&app_id) {
             self.send_packet(
                 sender_id,
@@ -151,6 +151,24 @@ impl GameServer {
 
             self.force_disconnect(sender_id);
 
+            return;
+        }
+
+        if !self.config.allowed_versions.is_empty() && !self.config.allowed_versions.contains(&version) {
+            let mut msg = format!("Version {} is not allowed", version);
+            msg.push_str("\nAllowed versions: ");
+            msg.push_str(&self.config.allowed_versions.join(", "));
+
+            self.send_packet(
+                sender_id,
+                PacketType::Error {
+                    error_code: 401,
+                    error_message: msg.into(),
+                },
+                Channel::Reliable,
+            );
+
+            self.force_disconnect(sender_id);
             return;
         }
 
@@ -263,37 +281,26 @@ impl GameServer {
             channel,
         );
     }
-
     fn handle_disconnect(&mut self, client_id: ClientId) {
-        let Some(session) = self.sessions.remove(&client_id) else {
-            warn!("Client {} disconnected without authenticating", client_id);
+        self.sessions.remove(&client_id);
+
+        let Some((app_id, room_id)) = self.client_to_room.remove(&client_id) else {
             return;
         };
 
-        let room_info = self.client_to_room.remove(&client_id);
-
-        let Some((app_id, room_id)) = room_info else {
-            return;
-        };
-
-        let app_opt = self.apps.get_mut(&app_id);
-        if app_opt.is_none() {
+        let Some(app) = self.apps.get_mut(&app_id) else {
             warn!("Client {} had invalid app_id on disconnect", client_id);
             return;
-        }
+        };
 
-        let app = app_opt.unwrap();
-
-        let room_opt = app.get_room(&room_id);
-        if room_opt.is_none() {
+        let Some(room) = app.get_room(&room_id) else {
             warn!("Client {} had invalid room_id on disconnect", client_id);
             return;
-        }
+        };
 
-        let room = room_opt.unwrap();
-
+        let is_host = room.get_host() == client_id;
         let host_id = room.get_host();
-        let is_host = host_id == client_id;
+
         let peer_godot_id = match room.get_godot_id(client_id) {
             Some(id) => id,
             None => {
@@ -302,47 +309,35 @@ impl GameServer {
             }
         };
 
-        let other_peers: Vec<ClientId> = room
+        let peers_to_kick: Vec<ClientId> = room
             .get_renet_ids()
             .into_iter()
             .filter(|&id| id != client_id)
             .collect();
 
         if is_host {
-            for peer_id in &other_peers {
-                self.send_packet(
-                    *peer_id,
-                    PacketType::ForceDisconnect,
-                    Channel::Reliable,
-                );
-                self.client_to_room.remove(peer_id);
-            }
-
-            if let Some(app) = self.apps.get_mut(&app_id) {
-                app.remove_room(&room_id);
-            }
+            app.remove_room(&room_id);
         } else {
-            self.send_packet(
-                host_id,
-                PacketType::PeerLeftRoom { peer_id: peer_godot_id },
-                Channel::Reliable,
-            );
-
-            if let Some(app) = self.apps.get_mut(&app_id) {
-                if let Some(room) = app.get_room(&room_id) {
-                    room.remove_peer(client_id);
-
-                    if room.is_empty() {
-                        app.remove_room(&room_id);
-                    }
-                }
+            room.remove_peer(client_id);
+            if room.is_empty() {
+                app.remove_room(&room_id);
             }
         }
 
-        if let Some(app) = self.apps.get_mut(&app_id) {
-            if app.get_rooms().is_empty() {
-                self.apps.remove(&app_id);
+        let app_empty = app.get_rooms().is_empty();
+
+        if is_host {
+            for peer_id in peers_to_kick {
+                self.sessions.remove(&peer_id);
+                self.client_to_room.remove(&peer_id);
+                self.send_packet(peer_id, PacketType::ForceDisconnect, Channel::Reliable);
             }
+        } else {
+            self.send_packet(host_id, PacketType::PeerLeftRoom { peer_id: peer_godot_id }, Channel::Reliable);
+        }
+
+        if app_empty {
+            self.apps.remove(&app_id);
         }
     }
 }

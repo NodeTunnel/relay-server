@@ -10,6 +10,9 @@ pub struct Config {
 
     #[serde(default = "defaults::app_whitelist")]
     pub app_whitelist: Vec<String>,
+
+    #[serde(default = "defaults::allowed_versions")]
+    pub allowed_versions: Vec<String>,
 }
 
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {
@@ -25,4 +28,5 @@ pub fn load_config(path: &str) -> Result<Config, ConfigError> {
 mod defaults {
     pub fn udp_bind_address() -> String { "0.0.0.0:8080".to_string() }
     pub fn app_whitelist() -> Vec<String> { vec![] }
+    pub fn allowed_versions() -> Vec<String> { vec![] }
 }
