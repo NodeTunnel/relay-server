@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Duration;
 use renet::{ClientId, ServerEvent};
 use tokio::time::{sleep, Instant};
@@ -8,11 +9,13 @@ use crate::config::Config;
 use crate::game::{App, ClientSession};
 use crate::game::room::Room;
 use crate::protocol::packet::PacketType;
+use crate::registry::client::RegistryClient;
 use crate::transport::{Channel, Packet, RenetTransport};
 
 pub struct GameServer {
     transport: RenetTransport,
     pub config: Config,
+    registry: Option<Arc<RegistryClient>>,
 
     /// App ID -> App
     pub apps: HashMap<String, App>,
@@ -24,9 +27,21 @@ pub struct GameServer {
 
 impl GameServer {
     pub fn new(transport: RenetTransport, config: Config) -> Self {
+        let registry = match (&config.registry_url, &config.relay_id, &config.relay_api_key) {
+            (Some(url), Some(id), Some(key)) => {
+                Some(
+                    Arc::new(
+                        RegistryClient::new(url.clone(), id.clone(), key.clone())
+                    )
+                )
+            }
+            _ => None,
+        };
+
         Self {
             transport,
             config,
+            registry,
             apps: HashMap::new(),
             sessions: HashMap::new(),
             client_to_room: HashMap::new(),
@@ -191,19 +206,34 @@ impl GameServer {
 
     fn create_room(&mut self, sender_id: ClientId, app_id: String) {
         let app = self.apps.get_mut(&app_id).expect("App exists");
-        let mut room = Room::new(sender_id.to_string(), sender_id);
+
+        // Generate unique room ID with relay prefix
+        let room_id = match &self.config.relay_id {
+            Some(relay_id) => format!("{}_{}", relay_id, sender_id),
+            None => sender_id.to_string(),
+        };
+
+        let mut room = Room::new(room_id.clone(), sender_id);
         let peer_id = room.add_peer(sender_id);
-        let room_id = room.id.clone();
 
         app.add_room(room);
-        self.client_to_room.insert(sender_id, (app_id, room_id.clone()));
+        self.client_to_room.insert(sender_id, (app_id.clone(), room_id.clone()));
+
+        // Register with registry if configured
+        if let Some(registry) = &self.registry {
+            let registry = registry.clone();
+            let room_id = room_id.clone();
+            let app_id = app_id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = registry.register_room(&room_id, &app_id).await {
+                    log::error!("Failed to register room {}: {}", room_id, e);
+                }
+            });
+        }
 
         self.send_packet(
             sender_id,
-            PacketType::ConnectedToRoom {
-                room_id,
-                peer_id
-            },
+            PacketType::ConnectedToRoom { room_id, peer_id },
             Channel::Reliable,
         )
     }
@@ -331,6 +361,16 @@ impl GameServer {
                 self.sessions.remove(&peer_id);
                 self.client_to_room.remove(&peer_id);
                 self.send_packet(peer_id, PacketType::ForceDisconnect, Channel::Reliable);
+            }
+            // Deregister from registry before removing locally
+            if let Some(registry) = &self.registry {
+                let registry = registry.clone();
+                let room_id = room_id.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = registry.deregister_room(&room_id).await {
+                        log::error!("Failed to deregister room {}: {}", room_id, e);
+                    }
+                });
             }
         } else {
             self.send_packet(host_id, PacketType::PeerLeftRoom { peer_id: peer_godot_id }, Channel::Reliable);

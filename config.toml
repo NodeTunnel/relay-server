@@ -1,3 +1,7 @@
 udp_bind_address = "0.0.0.0:8080"
-app_whitelist = ["nodetunnel_demo"]
+http_bind_address = "0.0.0.0:8081"
+app_whitelist = ["c1xz9woxf6bi42m"]
 allowed_versions = ["1.0.0_beta"]
+registry_url = "http://127.0.0.1:8090"
+relay_id = "pnp2t1sh5owuxib"
+relay_api_key = "5xza37fnworu7wl2yyedn1f3c566e8"
