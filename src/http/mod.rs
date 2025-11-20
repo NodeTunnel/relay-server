@@ -6,7 +6,7 @@ async fn health_check() -> &'static str {
 }
 
 pub async fn run_health_server(addr: SocketAddr) {
-    let app = Router::new().route("/health", get(health_check));
+    let app = Router::new().route("/http", get(health_check));
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

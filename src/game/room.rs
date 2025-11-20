@@ -1,5 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use renet::ClientId;
+use crate::transport::common::Channel;
+
+#[derive(Debug)]
+struct GamePacket {
+    from_peer: ClientId,
+    data: Vec<u8>,
+    channel: Channel
+}
 
 #[derive(Debug)]
 pub struct Room {
@@ -7,6 +15,8 @@ pub struct Room {
     host_id: ClientId,
     godot_to_client: HashMap<i32, ClientId>,
     client_to_godot: HashMap<ClientId, i32>,
+    pending_clients: HashSet<ClientId>,
+    pending_packets: HashMap<ClientId, Vec<GamePacket>>,
     next_godot_id: i32,
 }
 
@@ -17,6 +27,8 @@ impl Room {
             host_id,
             client_to_godot: HashMap::new(),
             godot_to_client: HashMap::new(),
+            pending_clients: HashSet::new(),
+            pending_packets: HashMap::new(),
             next_godot_id: 1,
         }
     }
@@ -52,6 +64,18 @@ impl Room {
 
     pub fn get_host(&self) -> ClientId {
         self.host_id
+    }
+
+    pub fn mark_pending(&mut self, renet_id: ClientId) {
+        self.pending_clients.insert(renet_id);
+    }
+
+    pub fn mark_ready(&mut self, renet_id: ClientId) -> bool {
+        self.pending_clients.remove(&renet_id)
+    }
+
+    pub fn is_pending(&self, renet_id: ClientId) -> bool {
+        self.pending_clients.contains(&renet_id)
     }
 
     pub fn remove_peer(&mut self, renet_id: ClientId) {

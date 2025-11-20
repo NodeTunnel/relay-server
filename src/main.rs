@@ -1,15 +1,14 @@
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::time::Duration;
 use crate::game::server::GameServer;
-use crate::transport::RenetTransport;
+use crate::transport::server::TokioTransport;
 
 mod config;
 mod transport;
 mod protocol;
 mod game;
 mod registry;
-mod health;
+mod http;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -20,14 +19,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .next()
         .ok_or("Failed to resolve host name")?;
 
-    let transport = RenetTransport::new(addr, 100)?;
+    let transport = TokioTransport::new(addr).await?;
 
     let health_addr: SocketAddr = config.http_bind_address
         .to_socket_addrs()?
         .next()
         .ok_or("Failed to resolve http host name")?;
-    tokio::spawn(health::run_health_server(health_addr));
+    tokio::spawn(http::run_health_server(health_addr));
 
     let mut server = GameServer::new(transport, config);
-    server.run(Duration::from_millis(4)).await
+    server.run().await
 }
