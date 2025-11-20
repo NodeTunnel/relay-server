@@ -1,4 +1,5 @@
+mod ids;
 pub mod packet;
-pub mod ids;
-pub mod serialize;
+mod serialize;
 pub mod version;
+pub mod error;
