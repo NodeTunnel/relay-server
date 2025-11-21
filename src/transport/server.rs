@@ -2,7 +2,7 @@ use tokio::net::UdpSocket;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use renet::ClientId;
 use tokio::sync::Mutex;
 use crate::transport::reliability::{ReliableReceiver, ReliableSender, SequenceNumber};
@@ -21,6 +21,7 @@ pub struct TokioTransport {
     client_addrs: HashMap<ClientId, SocketAddr>,
     next_client_id: u64,
     pending_events: Vec<ServerEvent>,
+    last_cleanup: Instant,
 }
 
 impl TokioTransport {
@@ -34,6 +35,7 @@ impl TokioTransport {
             client_addrs: HashMap::new(),
             next_client_id: 1,
             pending_events: Vec::new(),
+            last_cleanup: Instant::now(),
         })
     }
 
@@ -112,6 +114,11 @@ impl TokioTransport {
                                 sender.ack_received(SequenceNumber::new(seq));
                             }
                         }
+                        3 => { // Keepalive packet
+                            if let Some(session) = self.client_sessions.get_mut(&client_id) {
+                                session.last_heard_from = Instant::now();
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -180,6 +187,25 @@ impl TokioTransport {
             }
         }
         Ok(())
+    }
+
+    pub async fn cleanup_sessions(&mut self, timeout: Duration) {
+        let now = Instant::now();
+        let mut clients_to_disconnect = Vec::new();
+
+        for (&client_id, session) in &self.client_sessions {
+            if now.duration_since(session.last_heard_from) > timeout {
+                clients_to_disconnect.push(client_id);
+            }
+        }
+
+        if clients_to_disconnect.is_empty() {
+            return;
+        }
+
+        for client_id in clients_to_disconnect {
+            self.disconnect_client(client_id);
+        }
     }
 
     pub fn disconnect_client(&mut self, target: ClientId) {

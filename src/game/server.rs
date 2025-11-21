@@ -13,6 +13,12 @@ use crate::registry::client::RegistryClient;
 use crate::transport::common::{Channel, ServerEvent};
 use crate::transport::server::TokioTransport;
 
+struct DisconnectInfo {
+    is_host: bool,
+    godot_id: i32,
+    other_peers: Vec<ClientId>,
+}
+
 pub struct GameServer {
     transport: TokioTransport,
     pub config: Config,
@@ -52,14 +58,21 @@ impl GameServer {
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         let mut last_resend = Instant::now();
         let mut last_ack = Instant::now();
+        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(1));
+        cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            self.transport.socket.readable().await?;
+            tokio::select! {
+                Ok(_) = self.transport.socket.readable() => {
+                    let events = self.transport.recv_events().await;
+                    for event in events {
+                        self.handle_event(event).await;
+                    }
+                }
 
-            let events = self.transport.recv_events().await;
-
-            for event in events {
-                self.handle_event(event).await;
+                _ = cleanup_interval.tick() => {
+                    self.transport.cleanup_sessions(Duration::from_secs(5)).await;
+                }
             }
 
             let now = Instant::now();
@@ -371,66 +384,84 @@ impl GameServer {
             return;
         };
 
-        let Some(app) = self.apps.get_mut(&app_id) else {
-            warn!("Client {} had invalid app_id on disconnect", client_id);
-            return;
-        };
-
-        let Some(room) = app.get_room(&room_id) else {
-            warn!("Client {} had invalid room_id on disconnect", client_id);
-            return;
-        };
-
-        let is_host = room.get_host() == client_id;
-        let host_id = room.get_host();
-
-        let peer_godot_id = match room.get_godot_id(client_id) {
-            Some(id) => id,
-            None => {
-                warn!("Client {} not found in their room on disconnect", client_id);
+        let disconnect_info = {
+            let Some(app) = self.apps.get_mut(&app_id) else {
+                warn!("Client {} had invalid app_id on disconnect", client_id);
                 return;
+            };
+
+            let Some(room) = app.get_room(&room_id) else {
+                warn!("Client {} had invalid room_id on disconnect", client_id);
+                return;
+            };
+
+            let godot_id = match room.get_godot_id(client_id) {
+                Some(id) => id,
+                None => {
+                    warn!("Client {} not found in their room on disconnect", client_id);
+                    return;
+                }
+            };
+
+            DisconnectInfo {
+                is_host: room.get_host() == client_id,
+                godot_id,
+                other_peers: room.get_renet_ids()
+                    .into_iter()
+                    .filter(|&id| id != client_id)
+                    .collect(),
             }
         };
 
-        let peers_to_kick: Vec<ClientId> = room
-            .get_renet_ids()
-            .into_iter()
-            .filter(|&id| id != client_id)
-            .collect();
+        if disconnect_info.is_host {
+            self.handle_host_disconnect(app_id.clone(), room_id, disconnect_info.other_peers).await;
+        } else {
+            self.handle_peer_disconnect(app_id.clone(), room_id, client_id, disconnect_info.godot_id, disconnect_info.other_peers).await;
+        }
 
-        if is_host {
+        if let Some(app) = self.apps.get_mut(&app_id) {
+            if app.get_rooms().is_empty() {
+                self.apps.remove(&app_id);
+            }
+        }
+    }
+
+    async fn handle_host_disconnect(&mut self, app_id: String, room_id: String, peers_to_kick: Vec<ClientId>) {
+        if let Some(app) = self.apps.get_mut(&app_id) {
             app.remove_room(&room_id);
-        } else {
-            room.remove_peer(client_id);
-            if room.is_empty() {
-                app.remove_room(&room_id);
+        }
+
+        for peer_id in peers_to_kick {
+            self.sessions.remove(&peer_id);
+            self.client_to_room.remove(&peer_id);
+            self.send_packet(peer_id, PacketType::ForceDisconnect, Channel::Reliable).await;
+        }
+
+        if let Some(registry) = &self.registry {
+            let registry = registry.clone();
+            let room_id = room_id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = registry.deregister_room(&room_id).await {
+                    log::error!("Failed to deregister room {}: {}", room_id, e);
+                }
+            });
+        }
+    }
+
+    async fn handle_peer_disconnect(&mut self, app_id: String, room_id: String, client_id: ClientId, peer_godot_id: i32, other_peers: Vec<ClientId>) {
+        if let Some(app) = self.apps.get_mut(&app_id) {
+            if let Some(room) = app.get_room(&room_id) {
+                room.remove_peer(client_id);
+
+                if room.is_empty() {
+                    app.remove_room(&room_id);
+                    return;
+                }
             }
         }
 
-        let app_empty = app.get_rooms().is_empty();
-
-        if is_host {
-            for peer_id in peers_to_kick {
-                self.sessions.remove(&peer_id);
-                self.client_to_room.remove(&peer_id);
-                self.send_packet(peer_id, PacketType::ForceDisconnect, Channel::Reliable).await;
-            }
-
-            if let Some(registry) = &self.registry {
-                let registry = registry.clone();
-                let room_id = room_id.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = registry.deregister_room(&room_id).await {
-                        log::error!("Failed to deregister room {}: {}", room_id, e);
-                    }
-                });
-            }
-        } else {
-            self.send_packet(host_id, PacketType::PeerLeftRoom { peer_id: peer_godot_id }, Channel::Reliable).await;
-        }
-
-        if app_empty {
-            self.apps.remove(&app_id);
+        for peer_id in other_peers {
+            self.send_packet(peer_id, PacketType::PeerLeftRoom { peer_id: peer_godot_id }, Channel::Reliable).await;
         }
     }
 }
