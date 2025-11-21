@@ -363,7 +363,6 @@ impl GameServer {
         };
 
         let Some(target_renet_id) = room.get_renet_id(target_peer) else {
-            println!("Client {} not found in room {}", target_peer, room_id);
             return;
         };
 
@@ -418,12 +417,6 @@ impl GameServer {
         } else {
             self.handle_peer_disconnect(app_id.clone(), room_id, client_id, disconnect_info.godot_id, disconnect_info.other_peers).await;
         }
-
-        if let Some(app) = self.apps.get_mut(&app_id) {
-            if app.get_rooms().is_empty() {
-                self.apps.remove(&app_id);
-            }
-        }
     }
 
     async fn handle_host_disconnect(&mut self, app_id: String, room_id: String, peers_to_kick: Vec<ClientId>) {
@@ -431,10 +424,14 @@ impl GameServer {
             app.remove_room(&room_id);
         }
 
+        for peer_id in &peers_to_kick {
+            self.send_packet(*peer_id, PacketType::ForceDisconnect, Channel::Reliable).await;
+        }
+
         for peer_id in peers_to_kick {
             self.sessions.remove(&peer_id);
             self.client_to_room.remove(&peer_id);
-            self.send_packet(peer_id, PacketType::ForceDisconnect, Channel::Reliable).await;
+            self.force_disconnect(peer_id);
         }
 
         if let Some(registry) = &self.registry {

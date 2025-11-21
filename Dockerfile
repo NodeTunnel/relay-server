@@ -9,4 +9,5 @@ COPY --from=builder /app/target/release/relay-server /usr/local/bin/app
 COPY config.toml /config.toml
 WORKDIR /
 EXPOSE 8080/udp
+EXPOSE 8081/tcp
 CMD ["app"]
