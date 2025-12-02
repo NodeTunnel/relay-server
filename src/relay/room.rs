@@ -65,18 +65,6 @@ impl Room {
         self.host_id
     }
 
-    pub fn mark_pending(&mut self, renet_id: u64) {
-        self.pending_clients.insert(renet_id);
-    }
-
-    pub fn mark_ready(&mut self, renet_id: u64) -> bool {
-        self.pending_clients.remove(&renet_id)
-    }
-
-    pub fn is_pending(&self, renet_id: u64) -> bool {
-        self.pending_clients.contains(&renet_id)
-    }
-
     pub fn remove_peer(&mut self, renet_id: u64) {
         let Some(peer_id) = self.client_to_godot.remove(&renet_id) else {
             return;

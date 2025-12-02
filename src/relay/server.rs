@@ -4,8 +4,8 @@ use std::time::Duration;
 use tokio::time::{Instant};
 use log::warn;
 use crate::config::loader::Config;
-use crate::game::{App, ClientSession};
-use crate::game::room::Room;
+use crate::relay::{App, ClientSession};
+use crate::relay::room::Room;
 use crate::protocol::packet::PacketType;
 use crate::transport::common::{Channel, ServerEvent};
 use crate::transport::server::PaperUDP;
@@ -123,9 +123,6 @@ impl RelayServer {
             PacketType::JoinRoom { room_id } => {
                 self.join_room(client_id, session_app_id.clone(), room_id).await
             }
-            PacketType::PeerReady => {
-                self.announce_presence(client_id).await
-            }
             PacketType::GameData { data, from_peer } => {
                 self.route_game_data(client_id, from_peer, data, channel).await;
             }
@@ -148,7 +145,7 @@ impl RelayServer {
         }
     }
 
-    pub async fn send_packet(&mut self, target_client: u64, packet_type: PacketType, channel: Channel) {
+    pub async fn send_packet(&self, target_client: u64, packet_type: PacketType, channel: Channel) {
         match self.transport.send(
             target_client,
             packet_type.to_bytes(),
@@ -233,33 +230,31 @@ impl RelayServer {
             PacketType::ConnectedToRoom {
                 room_id,
                 peer_id,
-                existing_peers: vec![],
             },
             Channel::Reliable,
         ).await;
     }
 
     async fn join_room(&mut self, sender_id: u64, app_id: String, room_id: String) {
-        let app = self.apps.get_mut(&app_id).expect("App exists");
-        let Some(room) = app.get_room(&room_id) else {
-            self.send_packet(
-                sender_id,
-                PacketType::Error {
-                    error_code: 404,
-                    error_message: "Room not found".into(),
-                },
-                Channel::Reliable,
-            ).await;
-            return;
+        let (peer_id, host_id) = {
+            let app = self.apps.get_mut(&app_id).expect("App exists");
+            let Some(room) = app.get_room(&room_id) else {
+                self.send_packet(
+                    sender_id,
+                    PacketType::Error {
+                        error_code: 404,
+                        error_message: "Room not found".into(),
+                    },
+                    Channel::Reliable,
+                ).await;
+                return;
+            };
+
+            let peer_id = room.add_peer(sender_id);
+            let host_id = room.get_host();
+
+            (peer_id, host_id)
         };
-
-        let mut existing_peers = room
-            .get_godot_ids();
-
-        existing_peers.sort();
-
-        let peer_id = room.add_peer(sender_id);
-        room.mark_pending(sender_id);
 
         self.client_to_room.insert(sender_id, (app_id, room_id.clone()));
 
@@ -268,53 +263,22 @@ impl RelayServer {
             PacketType::ConnectedToRoom {
                 room_id: room_id.clone(),
                 peer_id,
-                existing_peers,
             },
             Channel::Reliable,
         ).await;
-    }
 
-    async fn announce_presence(&mut self, sender_id: u64) {
-        let Some((app_id, room_id)) = self.client_to_room.get(&sender_id).cloned() else {
-            warn!("Client {} sent PeerReady but isn't in a room", sender_id);
-            return;
-        };
-
-        let app = self.apps.get_mut(&app_id).expect("App exists");
-        let Some(room) = app.get_room(&room_id) else {
-            warn!("Room {} not found for client {}", room_id, sender_id);
-            return;
-        };
-
-        let Some(peer_id) = room.get_godot_id(sender_id) else {
-            warn!("Peer ID not found in room {}", room.id);
-            return;
-        };
-
-        let existing_clients = room.get_renet_ids();
-
-        if room.mark_ready(sender_id) {
-            for client in existing_clients {
-                if client == sender_id {
-                    continue;
-                }
-
-                self.send_packet(
-                    client,
-                    PacketType::PeerJoinedRoom {
-                        peer_id
-                    },
-                    Channel::Reliable,
-                ).await;
-            }
-        } else {
-            println!("Attempted to mark a non-pending peer ({}) as ready!", peer_id);
-        }
+        self.send_packet(
+            host_id,
+            PacketType::PeerJoinedRoom {
+                peer_id,
+            },
+            Channel::Reliable
+        ).await;
     }
 
     async fn route_game_data(&mut self, sender_id: u64, target_peer: i32, data: Vec<u8>, channel: Channel) {
         let Some((app_id, room_id)) = self.client_to_room.get(&sender_id) else {
-            println!("Client {} tried to send game data but is not in a room", sender_id);
+            println!("Client {} tried to send relay data but is not in a room", sender_id);
             return;
         };
 

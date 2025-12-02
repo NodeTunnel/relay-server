@@ -1,13 +1,12 @@
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::{Arc, RwLock};
-use crate::game::server::RelayServer;
+use crate::relay::server::RelayServer;
 use crate::transport::server::PaperUDP;
 
 mod config;
 mod transport;
 mod protocol;
-mod game;
+mod relay;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

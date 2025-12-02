@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::game::room::Room;
+use crate::relay::room::Room;
 
 pub struct App {
     pub(crate) id: String,
