@@ -1,34 +1,38 @@
-use std::collections::{HashMap, HashSet};
-use crate::transport::common::Channel;
-
-#[derive(Debug)]
-struct GamePacket {
-    from_peer: u64,
-    data: Vec<u8>,
-    channel: Channel
-}
+use std::collections::{HashMap};
+use crate::protocol::packet::RoomInfo;
 
 #[derive(Debug)]
 pub struct Room {
     pub id: String,
+    pub is_public: bool,
+    pub name: String,
+    pub max_players: i32,
     host_id: u64,
     godot_to_client: HashMap<i32, u64>,
     client_to_godot: HashMap<u64, i32>,
-    pending_clients: HashSet<u64>,
-    pending_packets: HashMap<u64, Vec<GamePacket>>,
     next_godot_id: i32,
 }
 
 impl Room {
-    pub fn new(id: String, host_id: u64) -> Self {
+    pub fn new(id: String, host_id: u64, is_public: bool, name: String, max_players: i32) -> Self {
         Self {
             id,
+            is_public,
+            name,
+            max_players,
             host_id,
             client_to_godot: HashMap::new(),
             godot_to_client: HashMap::new(),
-            pending_clients: HashSet::new(),
-            pending_packets: HashMap::new(),
             next_godot_id: 1,
+        }
+    }
+
+    pub fn to_info(&self) -> RoomInfo {
+        RoomInfo {
+            id: self.id.clone(),
+            players: self.get_renet_ids().len() as i32,
+            name: self.name.clone(),
+            max_players: self.max_players.clone(),
         }
     }
 
@@ -39,10 +43,6 @@ impl Room {
         self.next_godot_id += 1;
 
         godot_pid
-    }
-
-    pub fn get_peers(&self) -> &HashMap<u64, i32> {
-        &self.client_to_godot
     }
 
     pub fn get_renet_ids(&self) -> Vec<u64> {
@@ -73,7 +73,19 @@ impl Room {
         self.godot_to_client.remove(&peer_id);
     }
 
+    pub fn get_player_count(&self) -> i32 {
+        self.godot_to_client.len() as i32
+    }
+
     pub fn is_empty(&self) -> bool {
         self.client_to_godot.is_empty()
+    }
+
+    pub fn is_full(&self) -> bool {
+        if self.max_players == -1 {
+            return false;
+        }
+
+        self.get_player_count() >= self.max_players
     }
 }

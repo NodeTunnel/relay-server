@@ -1,5 +1,5 @@
 mod session;
-mod room;
+pub mod room;
 mod app;
 pub mod server;
 

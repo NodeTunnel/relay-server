@@ -117,8 +117,11 @@ impl RelayServer {
         };
 
         match packet_type {
-            PacketType::CreateRoom => {
-                self.create_room(client_id, session_app_id.clone()).await;
+            PacketType::CreateRoom { is_public, name, max_players } => {
+                self.create_room(client_id, session_app_id.clone(), is_public, name, max_players).await;
+            }
+            PacketType::ReqRooms => {
+                self.send_rooms(client_id, session_app_id.clone()).await;
             }
             PacketType::JoinRoom { room_id } => {
                 self.join_room(client_id, session_app_id.clone(), room_id).await
@@ -211,7 +214,7 @@ impl RelayServer {
         ).await;
     }
 
-    async fn create_room(&mut self, sender_id: u64, app_id: String) {
+    async fn create_room(&mut self, sender_id: u64, app_id: String, is_public: bool, name: String, max_players: i32) {
         let app = self.apps.get_mut(&app_id).expect("App exists");
 
         let room_id = match &self.config.relay_id {
@@ -219,7 +222,7 @@ impl RelayServer {
             None => sender_id.to_string(),
         };
 
-        let mut room = Room::new(room_id.clone(), sender_id);
+        let mut room = Room::new(room_id.clone(), sender_id, is_public, name, max_players);
         let peer_id = room.add_peer(sender_id);
 
         app.add_room(room);
@@ -230,6 +233,25 @@ impl RelayServer {
             PacketType::ConnectedToRoom {
                 room_id,
                 peer_id,
+            },
+            Channel::Reliable,
+        ).await;
+    }
+
+    async fn send_rooms(&mut self, target: u64, app_id: String) {
+        let app = self.apps.get_mut(&app_id).expect("App exists");
+        let mut available_rooms = vec![];
+
+        for (_, room) in app.get_rooms() {
+            if room.is_public {
+                available_rooms.push(room.to_info());
+            }
+        }
+
+        self.send_packet(
+            target,
+            PacketType::GetRooms {
+                rooms: available_rooms
             },
             Channel::Reliable,
         ).await;
@@ -249,6 +271,18 @@ impl RelayServer {
                 ).await;
                 return;
             };
+
+            if room.is_full() {
+                self.send_packet(
+                    sender_id,
+                    PacketType::Error {
+                        error_code: 422,
+                        error_message: "Room full".into(),
+                    },
+                    Channel::Reliable,
+                ).await;
+                return;
+            }
 
             let peer_id = room.add_peer(sender_id);
             let host_id = room.get_host();
