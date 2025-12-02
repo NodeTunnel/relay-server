@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
-use renet::{ClientId};
 use tokio::time::{Instant};
 use log::warn;
 use crate::config::loader::Config;
@@ -14,7 +13,7 @@ use crate::transport::server::PaperUDP;
 struct DisconnectInfo {
     is_host: bool,
     godot_id: i32,
-    other_peers: Vec<ClientId>,
+    other_peers: Vec<u64>,
 }
 
 pub struct RelayServer {
@@ -24,9 +23,9 @@ pub struct RelayServer {
     /// App ID -> App
     pub apps: HashMap<String, App>,
     /// ClientId -> ClientSession
-    pub sessions: HashMap<ClientId, ClientSession>,
+    pub sessions: HashMap<u64, ClientSession>,
     /// ClientId -> (App ID, Room ID)
-    pub(crate) client_to_room: HashMap<ClientId, (String, String)>,
+    pub(crate) client_to_room: HashMap<u64, (String, String)>,
 }
 
 impl RelayServer {
@@ -76,7 +75,7 @@ impl RelayServer {
         }
     }
 
-    async fn handle_packet(&mut self, client: ClientId, data: Vec<u8>, channel: Channel) {
+    async fn handle_packet(&mut self, client: u64, data: Vec<u8>, channel: Channel) {
         match PacketType::from_bytes(&data) {
             Ok(PacketType::Authenticate { app_id, version }) => {
                 self.authenticate_client(client, app_id, version).await;
@@ -101,7 +100,7 @@ impl RelayServer {
         }
     }
 
-    async fn handle_authorized_packet(&mut self, client_id: ClientId, packet_type: PacketType, channel: Channel) {
+    async fn handle_authorized_packet(&mut self, client_id: u64, packet_type: PacketType, channel: Channel) {
         let session_app_id = match self.sessions.get(&client_id) {
             Some(s) => s.app_id.clone(),
             None => {
@@ -149,7 +148,7 @@ impl RelayServer {
         }
     }
 
-    pub async fn send_packet(&mut self, target_client: ClientId, packet_type: PacketType, channel: Channel) {
+    pub async fn send_packet(&mut self, target_client: u64, packet_type: PacketType, channel: Channel) {
         match self.transport.send(
             target_client,
             packet_type.to_bytes(),
@@ -160,13 +159,13 @@ impl RelayServer {
         }
     }
 
-    pub fn force_disconnect(&mut self, target_client: ClientId) {
+    pub fn force_disconnect(&mut self, target_client: u64) {
         self.transport.disconnect_client(target_client);
     }
 
     /// Handlers
 
-    async fn authenticate_client(&mut self, sender_id: ClientId, app_id: String, version: String) {
+    async fn authenticate_client(&mut self, sender_id: u64, app_id: String, version: String) {
         if !self.is_app_allowed(app_id.as_str()) {
             self.send_packet(
                 sender_id,
@@ -215,7 +214,7 @@ impl RelayServer {
         ).await;
     }
 
-    async fn create_room(&mut self, sender_id: ClientId, app_id: String) {
+    async fn create_room(&mut self, sender_id: u64, app_id: String) {
         let app = self.apps.get_mut(&app_id).expect("App exists");
 
         let room_id = match &self.config.relay_id {
@@ -240,7 +239,7 @@ impl RelayServer {
         ).await;
     }
 
-    async fn join_room(&mut self, sender_id: ClientId, app_id: String, room_id: String) {
+    async fn join_room(&mut self, sender_id: u64, app_id: String, room_id: String) {
         let app = self.apps.get_mut(&app_id).expect("App exists");
         let Some(room) = app.get_room(&room_id) else {
             self.send_packet(
@@ -275,7 +274,7 @@ impl RelayServer {
         ).await;
     }
 
-    async fn announce_presence(&mut self, sender_id: ClientId) {
+    async fn announce_presence(&mut self, sender_id: u64) {
         let Some((app_id, room_id)) = self.client_to_room.get(&sender_id).cloned() else {
             warn!("Client {} sent PeerReady but isn't in a room", sender_id);
             return;
@@ -313,7 +312,7 @@ impl RelayServer {
         }
     }
 
-    async fn route_game_data(&mut self, sender_id: ClientId, target_peer: i32, data: Vec<u8>, channel: Channel) {
+    async fn route_game_data(&mut self, sender_id: u64, target_peer: i32, data: Vec<u8>, channel: Channel) {
         let Some((app_id, room_id)) = self.client_to_room.get(&sender_id) else {
             println!("Client {} tried to send game data but is not in a room", sender_id);
             return;
@@ -348,7 +347,7 @@ impl RelayServer {
         ).await;
     }
 
-    async fn handle_disconnect(&mut self, client_id: ClientId) {
+    async fn handle_disconnect(&mut self, client_id: u64) {
         self.sessions.remove(&client_id);
 
         let Some((app_id, room_id)) = self.client_to_room.remove(&client_id) else {
@@ -391,7 +390,7 @@ impl RelayServer {
         }
     }
 
-    async fn handle_host_disconnect(&mut self, app_id: String, room_id: String, peers_to_kick: Vec<ClientId>) {
+    async fn handle_host_disconnect(&mut self, app_id: String, room_id: String, peers_to_kick: Vec<u64>) {
         if let Some(app) = self.apps.get_mut(&app_id) {
             app.remove_room(&room_id);
         }
@@ -407,7 +406,7 @@ impl RelayServer {
         }
     }
 
-    async fn handle_peer_disconnect(&mut self, app_id: String, room_id: String, client_id: ClientId, peer_godot_id: i32, other_peers: Vec<ClientId>) {
+    async fn handle_peer_disconnect(&mut self, app_id: String, room_id: String, client_id: u64, peer_godot_id: i32, other_peers: Vec<u64>) {
         if let Some(app) = self.apps.get_mut(&app_id) {
             if let Some(room) = app.get_room(&room_id) {
                 room.remove_peer(client_id);

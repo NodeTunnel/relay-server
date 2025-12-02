@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use renet::ClientId;
 use tokio::sync::Mutex;
 use crate::transport::reliability::{ReliableReceiver, ReliableSender, SequenceNumber};
 use super::common::{Channel, ServerEvent};
@@ -16,9 +15,9 @@ pub struct ClientSession {
 
 pub struct PaperUDP {
     pub(crate) socket: Arc<UdpSocket>,
-    clients: HashMap<SocketAddr, ClientId>,
-    client_sessions: HashMap<ClientId, ClientSession>,
-    client_addrs: HashMap<ClientId, SocketAddr>,
+    clients: HashMap<SocketAddr, u64>,
+    client_sessions: HashMap<u64, ClientSession>,
+    client_addrs: HashMap<u64, SocketAddr>,
     next_client_id: u64,
     pending_events: Vec<ServerEvent>,
     last_cleanup: Instant,
@@ -50,7 +49,7 @@ impl PaperUDP {
                     let client_id = if let Some(&id) = self.clients.get(&addr) {
                         id
                     } else {
-                        let id = ClientId::from(self.next_client_id);
+                        let id = self.next_client_id;
                         self.next_client_id += 1;
                         self.clients.insert(addr, id);
                         self.client_addrs.insert(id, addr);
@@ -130,7 +129,7 @@ impl PaperUDP {
         std::mem::take(&mut self.pending_events)
     }
 
-    pub async fn send(&self, target: ClientId, data: Vec<u8>, channel: Channel) -> Result<(), std::io::Error> {
+    pub async fn send(&self, target: u64, data: Vec<u8>, channel: Channel) -> Result<(), std::io::Error> {
         if let Some(&addr) = self.client_addrs.get(&target) {
             match channel {
                 Channel::Reliable => {
@@ -208,7 +207,7 @@ impl PaperUDP {
         }
     }
 
-    pub fn disconnect_client(&mut self, target: ClientId) {
+    pub fn disconnect_client(&mut self, target: u64) {
         if let Some(addr) = self.client_addrs.remove(&target) {
             self.clients.remove(&addr);
             self.client_sessions.remove(&target);

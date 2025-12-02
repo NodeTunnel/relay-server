@@ -1,10 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use renet::ClientId;
 use crate::transport::common::Channel;
 
 #[derive(Debug)]
 struct GamePacket {
-    from_peer: ClientId,
+    from_peer: u64,
     data: Vec<u8>,
     channel: Channel
 }
@@ -12,16 +11,16 @@ struct GamePacket {
 #[derive(Debug)]
 pub struct Room {
     pub id: String,
-    host_id: ClientId,
-    godot_to_client: HashMap<i32, ClientId>,
-    client_to_godot: HashMap<ClientId, i32>,
-    pending_clients: HashSet<ClientId>,
-    pending_packets: HashMap<ClientId, Vec<GamePacket>>,
+    host_id: u64,
+    godot_to_client: HashMap<i32, u64>,
+    client_to_godot: HashMap<u64, i32>,
+    pending_clients: HashSet<u64>,
+    pending_packets: HashMap<u64, Vec<GamePacket>>,
     next_godot_id: i32,
 }
 
 impl Room {
-    pub fn new(id: String, host_id: ClientId) -> Self {
+    pub fn new(id: String, host_id: u64) -> Self {
         Self {
             id,
             host_id,
@@ -33,7 +32,7 @@ impl Room {
         }
     }
 
-    pub fn add_peer(&mut self, client_id: ClientId) -> i32 {
+    pub fn add_peer(&mut self, client_id: u64) -> i32 {
         let godot_pid = self.next_godot_id;
         self.client_to_godot.insert(client_id, godot_pid);
         self.godot_to_client.insert(godot_pid, client_id);
@@ -42,11 +41,11 @@ impl Room {
         godot_pid
     }
 
-    pub fn get_peers(&self) -> &HashMap<ClientId, i32> {
+    pub fn get_peers(&self) -> &HashMap<u64, i32> {
         &self.client_to_godot
     }
 
-    pub fn get_renet_ids(&self) -> Vec<ClientId> {
+    pub fn get_renet_ids(&self) -> Vec<u64> {
         self.client_to_godot.keys().copied().collect()
     }
 
@@ -54,31 +53,31 @@ impl Room {
         self.godot_to_client.keys().copied().collect()
     }
 
-    pub fn get_godot_id(&self, client_id: ClientId) -> Option<i32> {
+    pub fn get_godot_id(&self, client_id: u64) -> Option<i32> {
         self.client_to_godot.get(&client_id).copied()
     }
 
-    pub fn get_renet_id(&self, godot_id: i32) -> Option<ClientId> {
+    pub fn get_renet_id(&self, godot_id: i32) -> Option<u64> {
         self.godot_to_client.get(&godot_id).copied()
     }
 
-    pub fn get_host(&self) -> ClientId {
+    pub fn get_host(&self) -> u64 {
         self.host_id
     }
 
-    pub fn mark_pending(&mut self, renet_id: ClientId) {
+    pub fn mark_pending(&mut self, renet_id: u64) {
         self.pending_clients.insert(renet_id);
     }
 
-    pub fn mark_ready(&mut self, renet_id: ClientId) -> bool {
+    pub fn mark_ready(&mut self, renet_id: u64) -> bool {
         self.pending_clients.remove(&renet_id)
     }
 
-    pub fn is_pending(&self, renet_id: ClientId) -> bool {
+    pub fn is_pending(&self, renet_id: u64) -> bool {
         self.pending_clients.contains(&renet_id)
     }
 
-    pub fn remove_peer(&mut self, renet_id: ClientId) {
+    pub fn remove_peer(&mut self, renet_id: u64) {
         let Some(peer_id) = self.client_to_godot.remove(&renet_id) else {
             return;
         };

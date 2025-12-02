@@ -1,5 +1,3 @@
-use renet::ClientId;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     Reliable,
@@ -8,14 +6,14 @@ pub enum Channel {
 
 #[derive(Debug, Clone)]
 pub struct Packet {
-    pub client_id: ClientId,
+    pub client_id: u64,
     pub data: Vec<u8>,
     pub channel: Channel,
 }
 
 #[derive(Debug, Clone)]
 pub enum ServerEvent {
-    ClientConnected { client_id: ClientId },
-    ClientDisconnected { client_id: ClientId },
-    PacketReceived { client_id: ClientId, data: Vec<u8>, channel: Channel },
+    ClientConnected { client_id: u64 },
+    ClientDisconnected { client_id: u64 },
+    PacketReceived { client_id: u64, data: Vec<u8>, channel: Channel },
 }
