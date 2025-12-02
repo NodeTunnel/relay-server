@@ -1,15 +1,24 @@
 use crate::protocol::ids::*;
 use crate::protocol::error::ProtocolError;
-use crate::protocol::serialize::{push_i32, push_string, push_vec_i32, read_i32, read_string, read_vec_i32};
+use crate::protocol::serialize::{push_bool, push_i32, push_string, push_vec_room_info, read_bool, read_i32, read_string, read_vec_room_info};
+
+#[derive(Debug, Clone)]
+pub struct RoomInfo {
+    pub id: String,
+    pub name: String,
+    pub players: i32,
+    pub max_players: i32,
+}
 
 #[derive(Debug, Clone)]
 pub enum PacketType {
     Authenticate { app_id: String, version: String },
     ClientAuthenticated,
-    CreateRoom,
+    CreateRoom { is_public: bool, name: String, max_players: i32 },
+    ReqRooms,
+    GetRooms { rooms: Vec<RoomInfo> },
     JoinRoom { room_id: String },
-    ConnectedToRoom { room_id: String, peer_id: i32, existing_peers: Vec<i32> },
-    PeerReady,
+    ConnectedToRoom { room_id: String, peer_id: i32 },
     PeerJoinedRoom { peer_id: i32 },
     PeerLeftRoom { peer_id: i32 },
     GameData { from_peer: i32, data: Vec<u8> },
@@ -35,7 +44,20 @@ impl PacketType {
 
             CLIENT_AUTHENTICATED => PacketType::ClientAuthenticated,
 
-            CREATE_ROOM => PacketType::CreateRoom,
+            CREATE_ROOM => {
+                let (is_public, r) = read_bool(rest)?;
+                let (max_players, r) = read_i32(r)?;
+                let name = match read_string(r) {
+                    Ok((name, _)) => {
+                        name
+                    }
+                    Err(_) => {
+                        "".into()
+                    }
+                };
+
+                PacketType::CreateRoom { is_public, name, max_players }
+            },
 
             JOIN_ROOM => {
                 let (room_id, _) = read_string(rest)?;
@@ -44,12 +66,9 @@ impl PacketType {
 
             CONNECTED_TO_ROOM => {
                 let (room_id, r) = read_string(rest)?;
-                let (peer_id, r) = read_i32(r)?;
-                let (existing_peers, _) = read_vec_i32(r)?;
-                PacketType::ConnectedToRoom { room_id, peer_id, existing_peers }
+                let (peer_id, _) = read_i32(r)?;
+                PacketType::ConnectedToRoom { room_id, peer_id }
             }
-
-            PEER_READY => PacketType::PeerReady,
 
             PEER_JOINED => {
                 let (peer_id, _) = read_i32(rest)?;
@@ -74,6 +93,13 @@ impl PacketType {
                 PacketType::Error { error_code, error_message }
             }
 
+            REQ_ROOMS => PacketType::ReqRooms,
+
+            GET_ROOMS => {
+                let (rooms, _) = read_vec_room_info(rest)?;
+                PacketType::GetRooms { rooms }
+            }
+
             _ => return Err(ProtocolError::UnknownPacketType(packet_id))
         })
     }
@@ -92,8 +118,20 @@ impl PacketType {
                 buf.push(CLIENT_AUTHENTICATED);
             }
 
-            PacketType::CreateRoom => {
+            PacketType::CreateRoom { is_public, name, max_players } => {
                 buf.push(CREATE_ROOM);
+                push_bool(&mut buf, *is_public);
+                push_i32(&mut buf, *max_players);
+                push_string(&mut buf, name);
+            }
+
+            PacketType::ReqRooms => {
+                buf.push(REQ_ROOMS);
+            }
+
+            PacketType::GetRooms { rooms } => {
+                buf.push(GET_ROOMS);
+                push_vec_room_info(&mut buf, rooms);
             }
 
             PacketType::JoinRoom { room_id } => {
@@ -101,15 +139,10 @@ impl PacketType {
                 push_string(&mut buf, room_id);
             }
 
-            PacketType::ConnectedToRoom { room_id, peer_id, existing_peers } => {
+            PacketType::ConnectedToRoom { room_id, peer_id } => {
                 buf.push(CONNECTED_TO_ROOM);
                 push_string(&mut buf, room_id);
                 push_i32(&mut buf, *peer_id);
-                push_vec_i32(&mut buf, existing_peers);
-            }
-
-            PacketType::PeerReady => {
-                buf.push(PEER_READY);
             }
 
             PacketType::PeerJoinedRoom { peer_id } => {

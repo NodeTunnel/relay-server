@@ -1,54 +1,38 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::sync::Arc;
 use std::time::Duration;
-use renet::{ClientId};
 use tokio::time::{Instant};
 use log::warn;
-use crate::config::Config;
-use crate::game::{App, ClientSession};
-use crate::game::room::Room;
+use crate::config::loader::Config;
+use crate::relay::{App, ClientSession};
+use crate::relay::room::Room;
 use crate::protocol::packet::PacketType;
-use crate::registry::client::RegistryClient;
 use crate::transport::common::{Channel, ServerEvent};
-use crate::transport::server::TokioTransport;
+use crate::transport::server::PaperUDP;
 
 struct DisconnectInfo {
     is_host: bool,
     godot_id: i32,
-    other_peers: Vec<ClientId>,
+    other_peers: Vec<u64>,
 }
 
-pub struct GameServer {
-    transport: TokioTransport,
+pub struct RelayServer {
+    transport: PaperUDP,
     pub config: Config,
-    registry: Option<Arc<RegistryClient>>,
 
     /// App ID -> App
     pub apps: HashMap<String, App>,
     /// ClientId -> ClientSession
-    pub sessions: HashMap<ClientId, ClientSession>,
+    pub sessions: HashMap<u64, ClientSession>,
     /// ClientId -> (App ID, Room ID)
-    pub(crate) client_to_room: HashMap<ClientId, (String, String)>,
+    pub(crate) client_to_room: HashMap<u64, (String, String)>,
 }
 
-impl GameServer {
-    pub fn new(transport: TokioTransport, config: Config) -> Self {
-        let registry = match (&config.registry_url, &config.relay_id, &config.relay_api_key) {
-            (Some(url), Some(id), Some(key)) => {
-                Some(
-                    Arc::new(
-                        RegistryClient::new(url.clone(), id.clone(), key.clone())
-                    )
-                )
-            }
-            _ => None,
-        };
-
+impl RelayServer {
+    pub fn new(transport: PaperUDP, config: Config) -> Self {
         Self {
             transport,
             config,
-            registry,
             apps: HashMap::new(),
             sessions: HashMap::new(),
             client_to_room: HashMap::new(),
@@ -91,7 +75,7 @@ impl GameServer {
         }
     }
 
-    async fn handle_packet(&mut self, client: ClientId, data: Vec<u8>, channel: Channel) {
+    async fn handle_packet(&mut self, client: u64, data: Vec<u8>, channel: Channel) {
         match PacketType::from_bytes(&data) {
             Ok(PacketType::Authenticate { app_id, version }) => {
                 self.authenticate_client(client, app_id, version).await;
@@ -116,7 +100,7 @@ impl GameServer {
         }
     }
 
-    async fn handle_authorized_packet(&mut self, client_id: ClientId, packet_type: PacketType, channel: Channel) {
+    async fn handle_authorized_packet(&mut self, client_id: u64, packet_type: PacketType, channel: Channel) {
         let session_app_id = match self.sessions.get(&client_id) {
             Some(s) => s.app_id.clone(),
             None => {
@@ -133,14 +117,14 @@ impl GameServer {
         };
 
         match packet_type {
-            PacketType::CreateRoom => {
-                self.create_room(client_id, session_app_id.clone()).await;
+            PacketType::CreateRoom { is_public, name, max_players } => {
+                self.create_room(client_id, session_app_id.clone(), is_public, name, max_players).await;
+            }
+            PacketType::ReqRooms => {
+                self.send_rooms(client_id, session_app_id.clone()).await;
             }
             PacketType::JoinRoom { room_id } => {
                 self.join_room(client_id, session_app_id.clone(), room_id).await
-            }
-            PacketType::PeerReady => {
-                self.announce_presence(client_id).await
             }
             PacketType::GameData { data, from_peer } => {
                 self.route_game_data(client_id, from_peer, data, channel).await;
@@ -164,7 +148,7 @@ impl GameServer {
         }
     }
 
-    pub async fn send_packet(&mut self, target_client: ClientId, packet_type: PacketType, channel: Channel) {
+    pub async fn send_packet(&self, target_client: u64, packet_type: PacketType, channel: Channel) {
         match self.transport.send(
             target_client,
             packet_type.to_bytes(),
@@ -175,14 +159,14 @@ impl GameServer {
         }
     }
 
-    pub fn force_disconnect(&mut self, target_client: ClientId) {
+    pub fn force_disconnect(&mut self, target_client: u64) {
         self.transport.disconnect_client(target_client);
     }
 
     /// Handlers
 
-    async fn authenticate_client(&mut self, sender_id: ClientId, app_id: String, version: String) {
-        if !self.config.app_whitelist.is_empty() && !self.config.app_whitelist.contains(&app_id) {
+    async fn authenticate_client(&mut self, sender_id: u64, app_id: String, version: String) {
+        if !self.is_app_allowed(app_id.as_str()) {
             self.send_packet(
                 sender_id,
                 PacketType::Error {
@@ -197,10 +181,8 @@ impl GameServer {
             return;
         }
 
-        if !self.config.allowed_versions.is_empty() && !self.config.allowed_versions.contains(&version) {
-            let mut msg = format!("Version {} is not allowed", version);
-            msg.push_str("\nAllowed versions: ");
-            msg.push_str(&self.config.allowed_versions.join(", "));
+        if !self.is_version_allowed(version.as_str()) {
+            let msg = format!("Version {} is not allowed", version);
 
             self.send_packet(
                 sender_id,
@@ -232,7 +214,7 @@ impl GameServer {
         ).await;
     }
 
-    async fn create_room(&mut self, sender_id: ClientId, app_id: String) {
+    async fn create_room(&mut self, sender_id: u64, app_id: String, is_public: bool, name: String, max_players: i32) {
         let app = self.apps.get_mut(&app_id).expect("App exists");
 
         let room_id = match &self.config.relay_id {
@@ -240,55 +222,73 @@ impl GameServer {
             None => sender_id.to_string(),
         };
 
-        let mut room = Room::new(room_id.clone(), sender_id);
+        let mut room = Room::new(room_id.clone(), sender_id, is_public, name, max_players);
         let peer_id = room.add_peer(sender_id);
 
         app.add_room(room);
         self.client_to_room.insert(sender_id, (app_id.clone(), room_id.clone()));
-
-        if let Some(registry) = &self.registry {
-            let registry = registry.clone();
-            let room_id = room_id.clone();
-            let app_id = app_id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = registry.register_room(&room_id, &app_id).await {
-                    log::error!("Failed to register room {}: {}", room_id, e);
-                }
-            });
-        }
 
         self.send_packet(
             sender_id,
             PacketType::ConnectedToRoom {
                 room_id,
                 peer_id,
-                existing_peers: vec![],
             },
             Channel::Reliable,
         ).await;
     }
 
-    async fn join_room(&mut self, sender_id: ClientId, app_id: String, room_id: String) {
+    async fn send_rooms(&mut self, target: u64, app_id: String) {
         let app = self.apps.get_mut(&app_id).expect("App exists");
-        let Some(room) = app.get_room(&room_id) else {
-            self.send_packet(
-                sender_id,
-                PacketType::Error {
-                    error_code: 404,
-                    error_message: "Room not found".into(),
-                },
-                Channel::Reliable,
-            ).await;
-            return;
+        let mut available_rooms = vec![];
+
+        for (_, room) in app.get_rooms() {
+            if room.is_public {
+                available_rooms.push(room.to_info());
+            }
+        }
+
+        self.send_packet(
+            target,
+            PacketType::GetRooms {
+                rooms: available_rooms
+            },
+            Channel::Reliable,
+        ).await;
+    }
+
+    async fn join_room(&mut self, sender_id: u64, app_id: String, room_id: String) {
+        let (peer_id, host_id) = {
+            let app = self.apps.get_mut(&app_id).expect("App exists");
+            let Some(room) = app.get_room(&room_id) else {
+                self.send_packet(
+                    sender_id,
+                    PacketType::Error {
+                        error_code: 404,
+                        error_message: "Room not found".into(),
+                    },
+                    Channel::Reliable,
+                ).await;
+                return;
+            };
+
+            if room.is_full() {
+                self.send_packet(
+                    sender_id,
+                    PacketType::Error {
+                        error_code: 422,
+                        error_message: "Room full".into(),
+                    },
+                    Channel::Reliable,
+                ).await;
+                return;
+            }
+
+            let peer_id = room.add_peer(sender_id);
+            let host_id = room.get_host();
+
+            (peer_id, host_id)
         };
-
-        let mut existing_peers = room
-            .get_godot_ids();
-
-        existing_peers.sort();
-
-        let peer_id = room.add_peer(sender_id);
-        room.mark_pending(sender_id);
 
         self.client_to_room.insert(sender_id, (app_id, room_id.clone()));
 
@@ -297,53 +297,22 @@ impl GameServer {
             PacketType::ConnectedToRoom {
                 room_id: room_id.clone(),
                 peer_id,
-                existing_peers,
             },
             Channel::Reliable,
         ).await;
+
+        self.send_packet(
+            host_id,
+            PacketType::PeerJoinedRoom {
+                peer_id,
+            },
+            Channel::Reliable
+        ).await;
     }
 
-    async fn announce_presence(&mut self, sender_id: ClientId) {
-        let Some((app_id, room_id)) = self.client_to_room.get(&sender_id).cloned() else {
-            warn!("Client {} sent PeerReady but isn't in a room", sender_id);
-            return;
-        };
-
-        let app = self.apps.get_mut(&app_id).expect("App exists");
-        let Some(room) = app.get_room(&room_id) else {
-            warn!("Room {} not found for client {}", room_id, sender_id);
-            return;
-        };
-
-        let Some(peer_id) = room.get_godot_id(sender_id) else {
-            warn!("Peer ID not found in room {}", room.id);
-            return;
-        };
-
-        let existing_clients = room.get_renet_ids();
-
-        if room.mark_ready(sender_id) {
-            for client in existing_clients {
-                if client == sender_id {
-                    continue;
-                }
-
-                self.send_packet(
-                    client,
-                    PacketType::PeerJoinedRoom {
-                        peer_id
-                    },
-                    Channel::Reliable,
-                ).await;
-            }
-        } else {
-            println!("Attempted to mark a non-pending peer ({}) as ready!", peer_id);
-        }
-    }
-
-    async fn route_game_data(&mut self, sender_id: ClientId, target_peer: i32, data: Vec<u8>, channel: Channel) {
+    async fn route_game_data(&mut self, sender_id: u64, target_peer: i32, data: Vec<u8>, channel: Channel) {
         let Some((app_id, room_id)) = self.client_to_room.get(&sender_id) else {
-            println!("Client {} tried to send game data but is not in a room", sender_id);
+            println!("Client {} tried to send relay data but is not in a room", sender_id);
             return;
         };
 
@@ -376,7 +345,7 @@ impl GameServer {
         ).await;
     }
 
-    async fn handle_disconnect(&mut self, client_id: ClientId) {
+    async fn handle_disconnect(&mut self, client_id: u64) {
         self.sessions.remove(&client_id);
 
         let Some((app_id, room_id)) = self.client_to_room.remove(&client_id) else {
@@ -419,7 +388,7 @@ impl GameServer {
         }
     }
 
-    async fn handle_host_disconnect(&mut self, app_id: String, room_id: String, peers_to_kick: Vec<ClientId>) {
+    async fn handle_host_disconnect(&mut self, app_id: String, room_id: String, peers_to_kick: Vec<u64>) {
         if let Some(app) = self.apps.get_mut(&app_id) {
             app.remove_room(&room_id);
         }
@@ -433,19 +402,9 @@ impl GameServer {
             self.client_to_room.remove(&peer_id);
             self.force_disconnect(peer_id);
         }
-
-        if let Some(registry) = &self.registry {
-            let registry = registry.clone();
-            let room_id = room_id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = registry.deregister_room(&room_id).await {
-                    log::error!("Failed to deregister room {}: {}", room_id, e);
-                }
-            });
-        }
     }
 
-    async fn handle_peer_disconnect(&mut self, app_id: String, room_id: String, client_id: ClientId, peer_godot_id: i32, other_peers: Vec<ClientId>) {
+    async fn handle_peer_disconnect(&mut self, app_id: String, room_id: String, client_id: u64, peer_godot_id: i32, other_peers: Vec<u64>) {
         if let Some(app) = self.apps.get_mut(&app_id) {
             if let Some(room) = app.get_room(&room_id) {
                 room.remove_peer(client_id);
@@ -460,5 +419,22 @@ impl GameServer {
         for peer_id in other_peers {
             self.send_packet(peer_id, PacketType::PeerLeftRoom { peer_id: peer_godot_id }, Channel::Reliable).await;
         }
+    }
+
+    // TODO: Handle error
+    fn is_app_allowed(&self, app: &str) -> bool {
+        let whitelist = &self.config.app_whitelist;
+
+        if whitelist.is_empty() {
+            true
+        } else {
+            whitelist.contains(&app.to_string())
+        }
+    }
+
+    // TODO: Handle error
+    fn is_version_allowed(&self, version: &str) -> bool {
+        let versions = &self.config.allowed_versions;
+        versions.contains(&version.to_string())
     }
 }

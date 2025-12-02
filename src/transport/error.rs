@@ -10,7 +10,4 @@ pub enum TransportError {
 
     #[error("Failed to create Netcode server transport: {0}")]
     NetcodeCreationFailed(std::io::Error),
-
-    #[error("Failed to update Netcode server transport: {0}")]
-    NetcodeUpdateFailed(renet_netcode::NetcodeTransportError),
 }
