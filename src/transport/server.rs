@@ -14,7 +14,7 @@ pub struct ClientSession {
     last_heard_from: Instant,
 }
 
-pub struct TokioTransport {
+pub struct PaperUDP {
     pub(crate) socket: Arc<UdpSocket>,
     clients: HashMap<SocketAddr, ClientId>,
     client_sessions: HashMap<ClientId, ClientSession>,
@@ -24,7 +24,7 @@ pub struct TokioTransport {
     last_cleanup: Instant,
 }
 
-impl TokioTransport {
+impl PaperUDP {
     pub async fn new(addr: SocketAddr) -> Result<Self, std::io::Error> {
         let socket = UdpSocket::bind(addr).await?;
 

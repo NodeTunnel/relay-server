@@ -1,17 +1,15 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::sync::Arc;
 use std::time::Duration;
 use renet::{ClientId};
 use tokio::time::{Instant};
 use log::warn;
-use crate::config::Config;
+use crate::config::loader::Config;
 use crate::game::{App, ClientSession};
 use crate::game::room::Room;
 use crate::protocol::packet::PacketType;
-use crate::registry::client::RegistryClient;
 use crate::transport::common::{Channel, ServerEvent};
-use crate::transport::server::TokioTransport;
+use crate::transport::server::PaperUDP;
 
 struct DisconnectInfo {
     is_host: bool,
@@ -19,10 +17,9 @@ struct DisconnectInfo {
     other_peers: Vec<ClientId>,
 }
 
-pub struct GameServer {
-    transport: TokioTransport,
+pub struct RelayServer {
+    transport: PaperUDP,
     pub config: Config,
-    registry: Option<Arc<RegistryClient>>,
 
     /// App ID -> App
     pub apps: HashMap<String, App>,
@@ -32,23 +29,11 @@ pub struct GameServer {
     pub(crate) client_to_room: HashMap<ClientId, (String, String)>,
 }
 
-impl GameServer {
-    pub fn new(transport: TokioTransport, config: Config) -> Self {
-        let registry = match (&config.registry_url, &config.relay_id, &config.relay_api_key) {
-            (Some(url), Some(id), Some(key)) => {
-                Some(
-                    Arc::new(
-                        RegistryClient::new(url.clone(), id.clone(), key.clone())
-                    )
-                )
-            }
-            _ => None,
-        };
-
+impl RelayServer {
+    pub fn new(transport: PaperUDP, config: Config) -> Self {
         Self {
             transport,
             config,
-            registry,
             apps: HashMap::new(),
             sessions: HashMap::new(),
             client_to_room: HashMap::new(),
@@ -182,7 +167,7 @@ impl GameServer {
     /// Handlers
 
     async fn authenticate_client(&mut self, sender_id: ClientId, app_id: String, version: String) {
-        if !self.config.app_whitelist.is_empty() && !self.config.app_whitelist.contains(&app_id) {
+        if !self.is_app_allowed(app_id.as_str()) {
             self.send_packet(
                 sender_id,
                 PacketType::Error {
@@ -197,10 +182,8 @@ impl GameServer {
             return;
         }
 
-        if !self.config.allowed_versions.is_empty() && !self.config.allowed_versions.contains(&version) {
-            let mut msg = format!("Version {} is not allowed", version);
-            msg.push_str("\nAllowed versions: ");
-            msg.push_str(&self.config.allowed_versions.join(", "));
+        if !self.is_version_allowed(version.as_str()) {
+            let msg = format!("Version {} is not allowed", version);
 
             self.send_packet(
                 sender_id,
@@ -245,17 +228,6 @@ impl GameServer {
 
         app.add_room(room);
         self.client_to_room.insert(sender_id, (app_id.clone(), room_id.clone()));
-
-        if let Some(registry) = &self.registry {
-            let registry = registry.clone();
-            let room_id = room_id.clone();
-            let app_id = app_id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = registry.register_room(&room_id, &app_id).await {
-                    log::error!("Failed to register room {}: {}", room_id, e);
-                }
-            });
-        }
 
         self.send_packet(
             sender_id,
@@ -433,16 +405,6 @@ impl GameServer {
             self.client_to_room.remove(&peer_id);
             self.force_disconnect(peer_id);
         }
-
-        if let Some(registry) = &self.registry {
-            let registry = registry.clone();
-            let room_id = room_id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = registry.deregister_room(&room_id).await {
-                    log::error!("Failed to deregister room {}: {}", room_id, e);
-                }
-            });
-        }
     }
 
     async fn handle_peer_disconnect(&mut self, app_id: String, room_id: String, client_id: ClientId, peer_godot_id: i32, other_peers: Vec<ClientId>) {
@@ -460,5 +422,22 @@ impl GameServer {
         for peer_id in other_peers {
             self.send_packet(peer_id, PacketType::PeerLeftRoom { peer_id: peer_godot_id }, Channel::Reliable).await;
         }
+    }
+
+    // TODO: Handle error
+    fn is_app_allowed(&self, app: &str) -> bool {
+        let whitelist = &self.config.app_whitelist;
+
+        if whitelist.is_empty() {
+            true
+        } else {
+            whitelist.contains(&app.to_string())
+        }
+    }
+
+    // TODO: Handle error
+    fn is_version_allowed(&self, version: &str) -> bool {
+        let versions = &self.config.allowed_versions;
+        versions.contains(&version.to_string())
     }
 }
