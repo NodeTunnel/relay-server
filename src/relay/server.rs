@@ -5,7 +5,7 @@ use tokio::time::{Instant};
 use log::warn;
 use crate::config::loader::Config;
 use crate::relay::{App, ClientSession};
-use crate::relay::room::Room;
+use crate::relay::room::{Room, RoomIds};
 use crate::protocol::packet::PacketType;
 use crate::transport::common::{Channel, ServerEvent};
 use crate::transport::server::PaperUDP;
@@ -26,6 +26,8 @@ pub struct RelayServer {
     pub sessions: HashMap<u64, ClientSession>,
     /// ClientId -> (App ID, Room ID)
     pub(crate) client_to_room: HashMap<u64, (String, String)>,
+    /// Room ID generator
+    room_ids: RoomIds,
 }
 
 impl RelayServer {
@@ -36,6 +38,7 @@ impl RelayServer {
             apps: HashMap::new(),
             sessions: HashMap::new(),
             client_to_room: HashMap::new(),
+            room_ids: RoomIds::new(),
         }
     }
 
@@ -217,10 +220,7 @@ impl RelayServer {
     async fn create_room(&mut self, sender_id: u64, app_id: String, is_public: bool, name: String, max_players: i32) {
         let app = self.apps.get_mut(&app_id).expect("App exists");
 
-        let room_id = match &self.config.relay_id {
-            Some(relay_id) => format!("{}_{}", relay_id, sender_id),
-            None => sender_id.to_string(),
-        };
+        let room_id = format!("{}{}", self.config.relay_id, self.room_ids.generate());
 
         let mut room = Room::new(room_id.clone(), sender_id, is_public, name, max_players);
         let peer_id = room.add_peer(sender_id);
@@ -390,6 +390,7 @@ impl RelayServer {
 
     async fn handle_host_disconnect(&mut self, app_id: String, room_id: String, peers_to_kick: Vec<u64>) {
         if let Some(app) = self.apps.get_mut(&app_id) {
+            self.room_ids.free(&room_id);
             app.remove_room(&room_id);
         }
 
@@ -410,6 +411,7 @@ impl RelayServer {
                 room.remove_peer(client_id);
 
                 if room.is_empty() {
+                    self.room_ids.free(&room_id);
                     app.remove_room(&room_id);
                     return;
                 }

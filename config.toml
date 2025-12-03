@@ -1,7 +1,4 @@
 udp_bind_address = "0.0.0.0:8080"
-http_bind_address = "0.0.0.0:8081"
 app_whitelist = []
-allowed_versions = ["1.0.0_beta"]
-registry_url = "http://127.0.0.1:8090"
-relay_id = "pnp2t1sh5owuxib"
-relay_api_key = "5xza37fnworu7wl2yyedn1f3c566e8"
+allowed_versions = ["1.0.0_beta", "1.0.1_beta"]
+relay_id = "E"

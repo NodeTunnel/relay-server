@@ -1,5 +1,39 @@
-use std::collections::{HashMap};
+use std::collections::{HashMap, HashSet};
+use rand::{rng, Rng};
 use crate::protocol::packet::RoomInfo;
+
+const ID_CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ123456789";
+const ID_LENGTH: usize = 5;
+
+pub struct RoomIds {
+    used: HashSet<String>
+}
+
+impl RoomIds {
+    pub fn new() -> Self {
+        Self { used: HashSet::new() }
+    }
+
+    pub fn generate(&mut self) -> String {
+        loop {
+            let mut rng = rng();
+            let id: String = (0..ID_LENGTH)
+                .map(|_| {
+                    let idx = rng.random_range(0..ID_CHARS.len());
+                    ID_CHARS[idx] as char
+                })
+                .collect();
+
+            if self.used.insert(id.clone()) {
+                return id;
+            }
+        }
+    }
+
+    pub fn free(&mut self, id: &str) {
+        self.used.remove(id);
+    }
+}
 
 #[derive(Debug)]
 pub struct Room {

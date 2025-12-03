@@ -8,18 +8,14 @@ pub struct Config {
     #[serde(default = "defaults::udp_bind_address")]
     pub udp_bind_address: String,
 
-    #[serde(default = "defaults::http_bind_address")]
-    pub http_bind_address: String,
-
     #[serde(default = "defaults::app_whitelist")]
     pub app_whitelist: Vec<String>,
 
     #[serde(default = "defaults::allowed_versions")]
     pub allowed_versions: Vec<String>,
 
-    pub registry_url: Option<String>,
-    pub relay_id: Option<String>,
-    pub relay_api_key: Option<String>,
+    #[serde(default = "defaults::relay_id")]
+    pub relay_id: String,
 }
 
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {
@@ -34,7 +30,7 @@ pub fn load_config(path: &str) -> Result<Config, ConfigError> {
 
 mod defaults {
     pub fn udp_bind_address() -> String { "0.0.0.0:8080".to_string() }
-    pub fn http_bind_address() -> String { "0.0.0.0:8081".to_string() }
     pub fn app_whitelist() -> Vec<String> { vec![] }
     pub fn allowed_versions() -> Vec<String> { vec![] }
+    pub fn relay_id() -> String { "".to_string() }
 }
