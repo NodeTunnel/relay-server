@@ -1,0 +1,106 @@
+use tokio::net::UdpSocket;
+use std::net::SocketAddr;
+use std::time::{Duration, Instant};
+use paperudp::channel::DecodeResult;
+use paperudp::packet::PacketType;
+use crate::udp::sessions::ConnectionManager;
+use super::common::{ServerEvent, TransferChannel};
+
+pub struct PaperInterface {
+    pub(crate) socket: UdpSocket,
+    connection_manager: ConnectionManager,
+    pending_events: Vec<ServerEvent>,
+}
+
+impl PaperInterface {
+    pub async fn new(addr: SocketAddr) -> Result<Self, std::io::Error> {
+        let socket = UdpSocket::bind(addr).await?;
+
+        Ok(Self {
+            socket,
+            connection_manager: ConnectionManager::new(),
+            pending_events: Vec::new(),
+        })
+    }
+
+    pub async fn recv_events(&mut self) -> Vec<ServerEvent> {
+        let mut buf = [0u8; 65535];
+
+        loop {
+            match self.socket.try_recv_from(&mut buf) {
+                Ok((len, addr)) => {
+                    if len == 0 { continue; }
+
+                    let session = self.connection_manager.get_or_create(addr);
+                    session.last_heard_from = Instant::now();
+                    let res = session.channel.decode(&buf[..len]);
+
+                    match res {
+                        DecodeResult::Data { payload, ack_packet } => {
+                            for p in payload {
+                                self.pending_events.push(ServerEvent::PacketReceived {
+                                    client_id: session.id,
+                                    data: p,
+                                    channel: TransferChannel::Reliable,
+                                });
+                            }
+
+                            // TODO: Fix panic
+                            if let Some(ack) = ack_packet {
+                                self.socket.send_to(
+                                    ack.as_slice(),
+                                    session.addr
+                                ).await.expect("TODO: panic message");
+                            }
+                        }
+                        DecodeResult::Ack { .. } => {}
+                        DecodeResult::None => {}
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            }
+        }
+
+        std::mem::take(&mut self.pending_events)
+    }
+
+    pub async fn send(&mut self, target: u64, data: Vec<u8>, channel: TransferChannel) -> Result<(), std::io::Error> {
+        if let Some(session) = self.connection_manager.get_by_id(&target) {
+            match channel {
+                TransferChannel::Reliable => {
+                    let pkt = session.channel.encode(
+                        &*data,
+                        PacketType::ReliableOrdered
+                    );
+                    self.socket.send_to(&pkt, session.addr).await?;
+                }
+                TransferChannel::Unreliable => {
+                    let pkt = session.channel.encode(
+                        &data,
+                        PacketType::Unreliable
+                    );
+                    self.socket.send_to(&pkt, session.addr).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // TODO: Better error handling here
+    pub async fn do_resends(&mut self, interval: Duration) {
+        for (addr, pkt) in self.connection_manager.get_resends(interval) {
+            self.socket.send_to(&pkt, addr).await.unwrap();
+        }
+    }
+
+    pub async fn cleanup_sessions(&mut self, timeout: Duration) {
+        for client_id in self.connection_manager.cleanup_sessions(timeout) {
+            self.pending_events.push(ServerEvent::ClientDisconnected { client_id });
+        }
+    }
+
+    pub fn remove_client(&mut self, id: &u64) {
+        self.connection_manager.remove_session(id);
+    }
+}

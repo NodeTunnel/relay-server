@@ -8,6 +8,6 @@ pub enum TransportError {
     #[error("Clock may have gone backwards: {0}")]
     ClockError(#[from] std::time::SystemTimeError),
 
-    #[error("Failed to create Netcode server transport: {0}")]
+    #[error("Failed to create Netcode server udp: {0}")]
     NetcodeCreationFailed(std::io::Error),
 }

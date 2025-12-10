@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransferChannels {
+pub enum TransferChannel {
     Reliable,
     Unreliable,
 }
@@ -8,12 +8,11 @@ pub enum TransferChannels {
 pub struct Packet {
     pub client_id: u64,
     pub data: Vec<u8>,
-    pub channel: TransferChannels,
+    pub channel: TransferChannel,
 }
 
 #[derive(Debug, Clone)]
 pub enum ServerEvent {
-    ClientConnected { client_id: u64 },
     ClientDisconnected { client_id: u64 },
-    PacketReceived { client_id: u64, data: Vec<u8>, channel: TransferChannels },
+    PacketReceived { client_id: u64, data: Vec<u8>, channel: TransferChannel },
 }
