@@ -1,8 +1,12 @@
+use std::io::ErrorKind;
+use std::mem::take;
 use tokio::net::UdpSocket;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use paperudp::channel::DecodeResult;
 use paperudp::packet::PacketType;
+use tracing::warn;
+use crate::udp::error::UdpError;
 use crate::udp::sessions::ConnectionManager;
 use super::common::{ServerEvent, TransferChannel};
 
@@ -13,8 +17,9 @@ pub struct PaperInterface {
 }
 
 impl PaperInterface {
-    pub async fn new(addr: SocketAddr) -> Result<Self, std::io::Error> {
-        let socket = UdpSocket::bind(addr).await?;
+    pub async fn new(addr: SocketAddr) -> Result<Self, UdpError> {
+        let socket = UdpSocket::bind(addr).await
+            .map_err(|e| UdpError::BindError(e))?;
 
         Ok(Self {
             socket,
@@ -23,14 +28,13 @@ impl PaperInterface {
         })
     }
 
-    pub async fn recv_events(&mut self) -> Vec<ServerEvent> {
+    pub async fn recv_events(&mut self) -> Result<Vec<ServerEvent>, UdpError> {
         let mut buf = [0u8; 65535];
 
         loop {
             match self.socket.try_recv_from(&mut buf) {
                 Ok((len, addr)) => {
                     if len == 0 { continue; }
-
                     let session = self.connection_manager.get_or_create(addr);
                     session.last_heard_from = Instant::now();
                     let res = session.channel.decode(&buf[..len]);
@@ -45,24 +49,37 @@ impl PaperInterface {
                                 });
                             }
 
-                            // TODO: Fix panic
                             if let Some(ack) = ack_packet {
-                                self.socket.send_to(
+                                if let Err(e) = self.socket.send_to(
                                     ack.as_slice(),
                                     session.addr
-                                ).await.expect("TODO: panic message");
+                                ).await {
+                                    warn!("failed to send ack to {}: {}", session.addr, e);
+                                }
                             }
                         }
                         DecodeResult::Ack { .. } => {}
                         DecodeResult::None => {}
                     }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(_) => break,
+                Err(e) => match e.kind() {
+                    ErrorKind::WouldBlock => break,
+
+                    ErrorKind::Interrupted
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionRefused
+                    | ErrorKind::ConnectionAborted => {
+                        continue;
+                    }
+
+                    _ => {
+                        return Err(UdpError::RecvError(e));
+                    }
+                },
             }
         }
 
-        std::mem::take(&mut self.pending_events)
+        Ok(take(&mut self.pending_events))
     }
 
     pub async fn send(&mut self, target: u64, data: Vec<u8>, channel: TransferChannel) -> Result<(), std::io::Error> {
@@ -87,10 +104,12 @@ impl PaperInterface {
         Ok(())
     }
 
-    // TODO: Better error handling here
     pub async fn do_resends(&mut self, interval: Duration) {
         for (addr, pkt) in self.connection_manager.get_resends(interval) {
-            self.socket.send_to(&pkt, addr).await.unwrap();
+            if let Err(e) = self.socket.send_to(&pkt, addr).await {
+                warn!("failed to resend pkt {}", e);
+                continue;
+            }
         }
     }
 

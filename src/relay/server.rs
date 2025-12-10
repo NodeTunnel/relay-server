@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time::{Instant};
-use log::warn;
+use tracing::{error, info, warn};
 use crate::config::loader::Config;
 use crate::relay::{App, ClientSession};
 use crate::relay::room::{Room, RoomIds};
@@ -44,16 +44,22 @@ impl RelayServer {
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         let mut last_resend = Instant::now();
-        let mut last_ack = Instant::now();
         let mut cleanup_interval = tokio::time::interval(Duration::from_secs(1));
         cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
                 Ok(_) = self.transport.socket.readable() => {
-                    let events = self.transport.recv_events().await;
-                    for event in events {
-                        self.handle_event(event).await;
+                    match self.transport.recv_events().await {
+                        Ok(events) => {
+                            for event in events {
+                                self.handle_event(event).await;
+                            }
+                        }
+                        Err(e) => {
+                            error!("recv_events error: {}", e);
+                            return Err(e.into());
+                        }
                     }
                 }
 
@@ -93,7 +99,7 @@ impl RelayServer {
                 self.handle_authorized_packet(client, packet_type, channel).await;
             }
             _ => {
-                warn!("Unexpected packet type from {}", client);
+                warn!("unexpected packet type from {}: {:?}", client, data);
             }
         }
     }
@@ -150,7 +156,7 @@ impl RelayServer {
             channel,
         ).await {
             Ok(_) => {},
-            Err(e) => println!("Failed to send packet: {}", e)
+            Err(e) => warn!("failed to send packet: {}", e)
         }
     }
 
@@ -304,22 +310,22 @@ impl RelayServer {
 
     async fn route_game_data(&mut self, sender_id: u64, target_peer: i32, data: Vec<u8>, channel: TransferChannel) {
         let Some((app_id, room_id)) = self.client_to_room.get(&sender_id) else {
-            println!("Client {} tried to send relay data but is not in a room", sender_id);
+            warn!("{} tried to send relay data but is not in a room", sender_id);
             return;
         };
 
         let Some(app) = self.apps.get_mut(app_id) else {
-            println!("Client {} has invalid app_id in index", sender_id);
+            warn!("{} has invalid app_id in index", sender_id);
             return;
         };
 
         let Some(room) = app.get_room(room_id) else {
-            println!("Client {} has invalid room_id in index", sender_id);
+            warn!("{} has invalid room_id in index", sender_id);
             return;
         };
 
         let Some(sender_godot_id) = room.get_godot_id(sender_id) else {
-            println!("Client {} not found in their own room", sender_id);
+            warn!("{} not found in their own room", sender_id);
             return;
         };
 
@@ -341,24 +347,25 @@ impl RelayServer {
         self.sessions.remove(&client_id);
 
         let Some((app_id, room_id)) = self.client_to_room.remove(&client_id) else {
+            info!("attempted to remove non-existent client");
             return;
         };
 
         let disconnect_info = {
             let Some(app) = self.apps.get_mut(&app_id) else {
-                warn!("Client {} had invalid app_id on disconnect", client_id);
+                warn!("{} had invalid app_id on disconnect", client_id);
                 return;
             };
 
             let Some(room) = app.get_room(&room_id) else {
-                warn!("Client {} had invalid room_id on disconnect", client_id);
+                warn!("{} had invalid room_id on disconnect", client_id);
                 return;
             };
 
             let godot_id = match room.get_godot_id(client_id) {
                 Some(id) => id,
                 None => {
-                    warn!("Client {} not found in their room on disconnect", client_id);
+                    warn!("{} not found in their room on disconnect", client_id);
                     return;
                 }
             };
