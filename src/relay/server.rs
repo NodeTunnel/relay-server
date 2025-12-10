@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time::{Instant};
-use log::warn;
+use tracing::{error, info, warn};
 use crate::config::loader::Config;
 use crate::relay::{App, ClientSession};
 use crate::relay::room::{Room, RoomIds};
 use crate::protocol::packet::PacketType;
-use crate::transport::common::{Channel, ServerEvent};
-use crate::transport::server::PaperUDP;
+use crate::udp::common::{TransferChannel, ServerEvent};
+use crate::udp::paper_interface::PaperInterface;
 
 struct DisconnectInfo {
     is_host: bool,
@@ -17,7 +17,7 @@ struct DisconnectInfo {
 }
 
 pub struct RelayServer {
-    transport: PaperUDP,
+    transport: PaperInterface,
     pub config: Config,
 
     /// App ID -> App
@@ -31,7 +31,7 @@ pub struct RelayServer {
 }
 
 impl RelayServer {
-    pub fn new(transport: PaperUDP, config: Config) -> Self {
+    pub fn new(transport: PaperInterface, config: Config) -> Self {
         Self {
             transport,
             config,
@@ -44,16 +44,22 @@ impl RelayServer {
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         let mut last_resend = Instant::now();
-        let mut last_ack = Instant::now();
         let mut cleanup_interval = tokio::time::interval(Duration::from_secs(1));
         cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
                 Ok(_) = self.transport.socket.readable() => {
-                    let events = self.transport.recv_events().await;
-                    for event in events {
-                        self.handle_event(event).await;
+                    match self.transport.recv_events().await {
+                        Ok(events) => {
+                            for event in events {
+                                self.handle_event(event).await;
+                            }
+                        }
+                        Err(e) => {
+                            error!("recv_events error: {}", e);
+                            return Err(e.into());
+                        }
                     }
                 }
 
@@ -65,20 +71,15 @@ impl RelayServer {
             let now = Instant::now();
 
             if now.duration_since(last_resend) > Duration::from_millis(50) {
-                self.transport.resend_unacked().await.ok();
+                self.transport.do_resends(Duration::from_millis(100)).await;
                 last_resend = now;
-            }
-
-            if now.duration_since(last_ack) > Duration::from_millis(10) {
-                self.transport.send_acks().await.ok();
-                last_ack = now;
             }
 
             tokio::task::yield_now().await;
         }
     }
 
-    async fn handle_packet(&mut self, client: u64, data: Vec<u8>, channel: Channel) {
+    async fn handle_packet(&mut self, client: u64, data: Vec<u8>, channel: TransferChannel) {
         match PacketType::from_bytes(&data) {
             Ok(PacketType::Authenticate { app_id, version }) => {
                 self.authenticate_client(client, app_id, version).await;
@@ -91,19 +92,19 @@ impl RelayServer {
                             error_code: 0,
                             error_message: "Unauthorized".to_string(),
                         },
-                        Channel::Reliable,
+                        TransferChannel::Reliable,
                     ).await;
                     return;
                 }
                 self.handle_authorized_packet(client, packet_type, channel).await;
             }
             _ => {
-                warn!("Unexpected packet type from {}", client);
+                warn!("unexpected packet type from {}: {:?}", client, data);
             }
         }
     }
 
-    async fn handle_authorized_packet(&mut self, client_id: u64, packet_type: PacketType, channel: Channel) {
+    async fn handle_authorized_packet(&mut self, client_id: u64, packet_type: PacketType, channel: TransferChannel) {
         let session_app_id = match self.sessions.get(&client_id) {
             Some(s) => s.app_id.clone(),
             None => {
@@ -113,7 +114,7 @@ impl RelayServer {
                         error_code: 401,
                         error_message: "Unauthorized".into(),
                     },
-                    Channel::Reliable,
+                    TransferChannel::Reliable,
                 ).await;
                 return;
             }
@@ -138,11 +139,8 @@ impl RelayServer {
 
     async fn handle_event(&mut self, event: ServerEvent) {
         match event {
-            ServerEvent::ClientConnected { client_id } => {
-                println!("Client connected: {}", client_id);
-            }
             ServerEvent::ClientDisconnected { client_id } => {
-                println!("Client disconnected: {}", client_id);
+
                 self.handle_disconnect(client_id).await;
             }
             ServerEvent::PacketReceived { client_id, data, channel } => {
@@ -151,19 +149,19 @@ impl RelayServer {
         }
     }
 
-    pub async fn send_packet(&self, target_client: u64, packet_type: PacketType, channel: Channel) {
+    pub async fn send_packet(&mut self, target_client: u64, packet_type: PacketType, channel: TransferChannel) {
         match self.transport.send(
             target_client,
             packet_type.to_bytes(),
             channel,
         ).await {
             Ok(_) => {},
-            Err(e) => println!("Failed to send packet: {}", e)
+            Err(e) => warn!("failed to send packet: {}", e)
         }
     }
 
     pub fn force_disconnect(&mut self, target_client: u64) {
-        self.transport.disconnect_client(target_client);
+        self.transport.remove_client(&target_client);
     }
 
     /// Handlers
@@ -176,7 +174,7 @@ impl RelayServer {
                     error_code: 401,
                     error_message: "Unauthorized".into(),
                 },
-                Channel::Reliable,
+                TransferChannel::Reliable,
             ).await;
 
             self.force_disconnect(sender_id);
@@ -193,7 +191,7 @@ impl RelayServer {
                     error_code: 401,
                     error_message: msg.into(),
                 },
-                Channel::Reliable,
+                TransferChannel::Reliable,
             ).await;
 
             self.force_disconnect(sender_id);
@@ -213,7 +211,7 @@ impl RelayServer {
         self.send_packet(
             sender_id,
             PacketType::ClientAuthenticated,
-            Channel::Reliable,
+            TransferChannel::Reliable,
         ).await;
     }
 
@@ -234,7 +232,7 @@ impl RelayServer {
                 room_id,
                 peer_id,
             },
-            Channel::Reliable,
+            TransferChannel::Reliable,
         ).await;
     }
 
@@ -253,7 +251,7 @@ impl RelayServer {
             PacketType::GetRooms {
                 rooms: available_rooms
             },
-            Channel::Reliable,
+            TransferChannel::Reliable,
         ).await;
     }
 
@@ -267,7 +265,7 @@ impl RelayServer {
                         error_code: 404,
                         error_message: "Room not found".into(),
                     },
-                    Channel::Reliable,
+                    TransferChannel::Reliable,
                 ).await;
                 return;
             };
@@ -279,7 +277,7 @@ impl RelayServer {
                         error_code: 422,
                         error_message: "Room full".into(),
                     },
-                    Channel::Reliable,
+                    TransferChannel::Reliable,
                 ).await;
                 return;
             }
@@ -298,7 +296,7 @@ impl RelayServer {
                 room_id: room_id.clone(),
                 peer_id,
             },
-            Channel::Reliable,
+            TransferChannel::Reliable,
         ).await;
 
         self.send_packet(
@@ -306,28 +304,28 @@ impl RelayServer {
             PacketType::PeerJoinedRoom {
                 peer_id,
             },
-            Channel::Reliable
+            TransferChannel::Reliable
         ).await;
     }
 
-    async fn route_game_data(&mut self, sender_id: u64, target_peer: i32, data: Vec<u8>, channel: Channel) {
+    async fn route_game_data(&mut self, sender_id: u64, target_peer: i32, data: Vec<u8>, channel: TransferChannel) {
         let Some((app_id, room_id)) = self.client_to_room.get(&sender_id) else {
-            println!("Client {} tried to send relay data but is not in a room", sender_id);
+            warn!("{} tried to send relay data but is not in a room", sender_id);
             return;
         };
 
         let Some(app) = self.apps.get_mut(app_id) else {
-            println!("Client {} has invalid app_id in index", sender_id);
+            warn!("{} has invalid app_id in index", sender_id);
             return;
         };
 
         let Some(room) = app.get_room(room_id) else {
-            println!("Client {} has invalid room_id in index", sender_id);
+            warn!("{} has invalid room_id in index", sender_id);
             return;
         };
 
         let Some(sender_godot_id) = room.get_godot_id(sender_id) else {
-            println!("Client {} not found in their own room", sender_id);
+            warn!("{} not found in their own room", sender_id);
             return;
         };
 
@@ -349,24 +347,25 @@ impl RelayServer {
         self.sessions.remove(&client_id);
 
         let Some((app_id, room_id)) = self.client_to_room.remove(&client_id) else {
+            info!("attempted to remove non-existent client");
             return;
         };
 
         let disconnect_info = {
             let Some(app) = self.apps.get_mut(&app_id) else {
-                warn!("Client {} had invalid app_id on disconnect", client_id);
+                warn!("{} had invalid app_id on disconnect", client_id);
                 return;
             };
 
             let Some(room) = app.get_room(&room_id) else {
-                warn!("Client {} had invalid room_id on disconnect", client_id);
+                warn!("{} had invalid room_id on disconnect", client_id);
                 return;
             };
 
             let godot_id = match room.get_godot_id(client_id) {
                 Some(id) => id,
                 None => {
-                    warn!("Client {} not found in their room on disconnect", client_id);
+                    warn!("{} not found in their room on disconnect", client_id);
                     return;
                 }
             };
@@ -395,7 +394,7 @@ impl RelayServer {
         }
 
         for peer_id in &peers_to_kick {
-            self.send_packet(*peer_id, PacketType::ForceDisconnect, Channel::Reliable).await;
+            self.send_packet(*peer_id, PacketType::ForceDisconnect, TransferChannel::Reliable).await;
         }
 
         for peer_id in peers_to_kick {
@@ -419,11 +418,10 @@ impl RelayServer {
         }
 
         for peer_id in other_peers {
-            self.send_packet(peer_id, PacketType::PeerLeftRoom { peer_id: peer_godot_id }, Channel::Reliable).await;
+            self.send_packet(peer_id, PacketType::PeerLeftRoom { peer_id: peer_godot_id }, TransferChannel::Reliable).await;
         }
     }
 
-    // TODO: Handle error
     fn is_app_allowed(&self, app: &str) -> bool {
         let whitelist = &self.config.app_whitelist;
 
@@ -434,7 +432,6 @@ impl RelayServer {
         }
     }
 
-    // TODO: Handle error
     fn is_version_allowed(&self, version: &str) -> bool {
         let versions = &self.config.allowed_versions;
         versions.contains(&version.to_string())

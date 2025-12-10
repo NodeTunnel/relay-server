@@ -1,15 +1,24 @@
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
+use tracing::info;
+use tracing_subscriber::FmtSubscriber;
 use crate::relay::server::RelayServer;
-use crate::transport::server::PaperUDP;
+use crate::udp::paper_interface::PaperInterface;
 
 mod config;
-mod transport;
+mod udp;
 mod protocol;
 mod relay;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(tracing::Level::INFO)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("setting default subscriber failed");
+
     let config = config::loader::load_config("config.toml")?;
 
     let addr: SocketAddr = config.udp_bind_address
@@ -17,7 +26,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .next()
         .ok_or("Failed to resolve host name")?;
 
-    let transport = PaperUDP::new(addr).await?;
+    let transport = PaperInterface::new(addr).await?;
     let mut server = RelayServer::new(transport, config);
+    info!("relay server started");
     server.run().await
 }
