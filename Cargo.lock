@@ -87,6 +87,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "paperudp"
+version = "0.1.0"
+source = "git+https://github.com/curtjs/paperudp.git#360fed5228f83283287cce75d49a91e2188ad71d"
+dependencies = [
+ "rand",
+ "thiserror",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -191,6 +200,7 @@ name = "relay-server"
 version = "0.1.0"
 dependencies = [
  "log",
+ "paperudp",
  "rand",
  "serde",
  "thiserror",

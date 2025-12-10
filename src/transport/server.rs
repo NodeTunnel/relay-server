@@ -1,40 +1,36 @@
 use tokio::net::UdpSocket;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
-use crate::transport::reliability::{ReliableReceiver, ReliableSender, SequenceNumber};
-use super::common::{Channel, ServerEvent};
+use paperudp::channel::{Channel, DecodeResult};
+use paperudp::packet::PacketType;
+use super::common::{ServerEvent, TransferChannels};
 
 pub struct ClientSession {
-    reliable_sender: Mutex<ReliableSender>,
-    reliable_receiver: Mutex<ReliableReceiver>,
+    channel: Channel,
     last_heard_from: Instant,
 }
 
-pub struct PaperUDP {
-    pub(crate) socket: Arc<UdpSocket>,
+pub struct PaperTransport {
+    pub socket: UdpSocket,
     clients: HashMap<SocketAddr, u64>,
     client_sessions: HashMap<u64, ClientSession>,
     client_addrs: HashMap<u64, SocketAddr>,
     next_client_id: u64,
     pending_events: Vec<ServerEvent>,
-    last_cleanup: Instant,
 }
 
-impl PaperUDP {
+impl PaperTransport {
     pub async fn new(addr: SocketAddr) -> Result<Self, std::io::Error> {
         let socket = UdpSocket::bind(addr).await?;
 
         Ok(Self {
-            socket: Arc::new(socket),
+            socket,
             clients: HashMap::new(),
             client_sessions: HashMap::new(),
             client_addrs: HashMap::new(),
             next_client_id: 1,
             pending_events: Vec::new(),
-            last_cleanup: Instant::now(),
         })
     }
 
@@ -46,6 +42,7 @@ impl PaperUDP {
                 Ok((len, addr)) => {
                     if len == 0 { continue; }
 
+                    // session management
                     let client_id = if let Some(&id) = self.clients.get(&addr) {
                         id
                     } else {
@@ -55,8 +52,7 @@ impl PaperUDP {
                         self.client_addrs.insert(id, addr);
 
                         self.client_sessions.insert(id, ClientSession {
-                            reliable_sender: Mutex::new(ReliableSender::new()),
-                            reliable_receiver: Mutex::new(ReliableReceiver::new()),
+                            channel: Channel::new(),
                             last_heard_from: Instant::now(),
                         });
 
@@ -64,61 +60,33 @@ impl PaperUDP {
                         id
                     };
 
-                    if let Some(session) = self.client_sessions.get_mut(&client_id) {
-                        session.last_heard_from = Instant::now();
-                    }
+                    let Some(session) = self.client_sessions.get_mut(&client_id) else {
+                        continue;
+                    };
+                    // end session management
 
-                    let packet_type = buf[0];
+                    session.last_heard_from = Instant::now();
+                    let res = session.channel.decode(&buf[..len]);
 
-                    match packet_type {
-                        0 => { // Reliable packet
-                            if buf.len() < 5 { continue; }
-                            let seq = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
-                            let data = buf[5..len].to_vec();
+                    match res {
+                        DecodeResult::Data { payload, ack_packet } => {
+                            for p in payload {
+                                self.pending_events.push(ServerEvent::PacketReceived {
+                                    client_id,
+                                    data: p,
+                                    channel: TransferChannels::Reliable,
+                                });
+                            }
 
-                            if let Some(session) = self.client_sessions.get_mut(&client_id) {
-                                let mut receiver = session.reliable_receiver.lock().await;
-                                let acks = receiver.receive(SequenceNumber::new(seq), data);
-
-                                // Queue acks
-                                let mut sender = session.reliable_sender.lock().await;
-                                for ack in acks {
-                                    sender.queue_ack(ack);
-                                }
-
-                                // Extract received packets
-                                let packets = receiver.take_all_packets();
-                                for packet in packets {
-                                    self.pending_events.push(ServerEvent::PacketReceived {
-                                        client_id,
-                                        data: packet,
-                                        channel: Channel::Reliable,
-                                    });
-                                }
+                            if let Some(ack) = ack_packet {
+                                self.socket.send_to(
+                                    ack.as_slice(),
+                                    self.client_addrs.get(&client_id).unwrap()
+                                ).await.expect("TODO: panic message");
                             }
                         }
-                        1 => { // Unreliable packet
-                            self.pending_events.push(ServerEvent::PacketReceived {
-                                client_id,
-                                data: buf[1..len].to_vec(),
-                                channel: Channel::Unreliable,
-                            });
-                        }
-                        2 => { // ACK packet
-                            if buf.len() < 5 { continue; }
-                            let seq = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
-
-                            if let Some(session) = self.client_sessions.get_mut(&client_id) {
-                                let mut sender = session.reliable_sender.lock().await;
-                                sender.ack_received(SequenceNumber::new(seq));
-                            }
-                        }
-                        3 => { // Keepalive packet
-                            if let Some(session) = self.client_sessions.get_mut(&client_id) {
-                                session.last_heard_from = Instant::now();
-                            }
-                        }
-                        _ => {}
+                        DecodeResult::Ack { .. } => {}
+                        DecodeResult::None => {}
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -129,22 +97,20 @@ impl PaperUDP {
         std::mem::take(&mut self.pending_events)
     }
 
-    pub async fn send(&self, target: u64, data: Vec<u8>, channel: Channel) -> Result<(), std::io::Error> {
+    pub async fn send(&mut self, target: u64, data: Vec<u8>, channel: TransferChannels) -> Result<(), std::io::Error> {
         if let Some(&addr) = self.client_addrs.get(&target) {
             match channel {
-                Channel::Reliable => {
-                    if let Some(session) = self.client_sessions.get(&target) {
-                        let mut sender = session.reliable_sender.lock().await;
-                        let seq = sender.send(data.clone());
-
-                        let mut packet = vec![0u8];
-                        packet.extend(seq.0.to_be_bytes());
-                        packet.extend(data);
-                        self.socket.send_to(&packet, addr).await?;
+                TransferChannels::Reliable => {
+                    if let Some(session) = self.client_sessions.get_mut(&target) {
+                        let pkt = session.channel.encode(
+                            &*data,
+                            PacketType::ReliableOrdered
+                        );
+                        self.socket.send_to(&pkt, addr).await?;
                     }
                 }
-                Channel::Unreliable => {
-                    let mut packet = vec![1u8];
+                TransferChannels::Unreliable => {
+                    let mut packet = vec![0u8];
                     packet.extend(data);
                     self.socket.send_to(&packet, addr).await?;
                 }
@@ -153,39 +119,15 @@ impl PaperUDP {
         Ok(())
     }
 
-    pub async fn send_acks(&self) -> Result<(), std::io::Error> {
-        for (client_id, session) in &self.client_sessions {
-            let mut sender = session.reliable_sender.lock().await;
-            let pending_acks = sender.get_pending_acks();
+    pub async fn do_resends(&mut self, interval: Duration) {
+        for (id, session) in self.client_sessions.iter_mut() {
+            let addr = self.client_addrs.get(id).expect("exists");
+            let resends = session.channel.collect_resends(interval);
 
-            for ack in pending_acks {
-                let mut packet = vec![2u8]; // ACK packet type
-                packet.extend(ack.0.to_be_bytes());
-
-                if let Some(&addr) = self.client_addrs.get(client_id) {
-                    self.socket.send_to(&packet, addr).await?;
-                }
+            for pkt in resends {
+                self.socket.send_to(&*pkt, addr).await.unwrap();
             }
         }
-        Ok(())
-    }
-
-    pub async fn resend_unacked(&self) -> Result<(), std::io::Error> {
-        for (client_id, session) in &self.client_sessions {
-            let mut sender = session.reliable_sender.lock().await;
-            let resends = sender.get_resends();
-
-            for (seq, data) in resends {
-                let mut packet = vec![0u8];
-                packet.extend(seq.0.to_be_bytes());
-                packet.extend(data);
-
-                if let Some(&addr) = self.client_addrs.get(client_id) {
-                    self.socket.send_to(&packet, addr).await?;
-                }
-            }
-        }
-        Ok(())
     }
 
     pub async fn cleanup_sessions(&mut self, timeout: Duration) {
@@ -209,6 +151,7 @@ impl PaperUDP {
 
     pub fn disconnect_client(&mut self, target: u64) {
         if let Some(addr) = self.client_addrs.remove(&target) {
+            println!("client disconnected: {}", target);
             self.clients.remove(&addr);
             self.client_sessions.remove(&target);
             self.pending_events.push(ServerEvent::ClientDisconnected { client_id: target });

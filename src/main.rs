@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
 use crate::relay::server::RelayServer;
-use crate::transport::server::PaperUDP;
+use crate::transport::server::PaperTransport;
 
 mod config;
 mod transport;
@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .next()
         .ok_or("Failed to resolve host name")?;
 
-    let transport = PaperUDP::new(addr).await?;
+    let transport = PaperTransport::new(addr).await?;
     let mut server = RelayServer::new(transport, config);
     server.run().await
 }
