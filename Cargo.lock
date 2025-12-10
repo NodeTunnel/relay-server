@@ -110,7 +110,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "paperudp"
 version = "0.1.0"
-source = "git+https://github.com/curtjs/paperudp.git#360fed5228f83283287cce75d49a91e2188ad71d"
+source = "git+https://github.com/curtjs/paperudp.git#f9708a383f52b881ef35c67a442e89df3531f8b9"
 dependencies = [
  "rand",
  "thiserror",

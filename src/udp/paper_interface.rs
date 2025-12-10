@@ -40,13 +40,22 @@ impl PaperInterface {
                     let res = session.channel.decode(&buf[..len]);
 
                     match res {
-                        DecodeResult::Data { payload, ack_packet } => {
+                        DecodeResult::Unreliable { payload } => {
                             for p in payload {
                                 // heartbeat
                                 if p == [3u8] {
                                     continue;
                                 }
 
+                                self.pending_events.push(ServerEvent::PacketReceived {
+                                    client_id: session.id,
+                                    data: p,
+                                    channel: TransferChannel::Unreliable,
+                                });
+                            }
+                        }
+                        DecodeResult::Reliable { payload, ack_packet, .. } => {
+                            for p in payload {
                                 self.pending_events.push(ServerEvent::PacketReceived {
                                     client_id: session.id,
                                     data: p,
