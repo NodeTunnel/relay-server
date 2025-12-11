@@ -14,7 +14,16 @@ pub struct Config {
     #[serde(default = "defaults::allowed_versions")]
     pub allowed_versions: Vec<String>,
 
-    #[serde(default = "defaults::relay_id")]
+    #[serde(default = "defaults::empty_string")]
+    pub pocketbase_url: String,
+
+    #[serde(default = "defaults::empty_string")]
+    pub pocketbase_email: String,
+
+    #[serde(default = "defaults::empty_string")]
+    pub pocketbase_password: String,
+
+    #[serde(default = "defaults::empty_string")]
     pub relay_id: String,
 }
 
@@ -32,5 +41,5 @@ mod defaults {
     pub fn udp_bind_address() -> String { "0.0.0.0:8080".to_string() }
     pub fn app_whitelist() -> Vec<String> { vec![] }
     pub fn allowed_versions() -> Vec<String> { vec![] }
-    pub fn relay_id() -> String { "".to_string() }
+    pub fn empty_string() -> String { "".to_string() }
 }

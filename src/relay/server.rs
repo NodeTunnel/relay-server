@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::time::{Instant};
 use tracing::{error, info, warn};
 use crate::config::loader::Config;
+use crate::http::wrapper::HttpWrapper;
 use crate::relay::{App, ClientSession};
 use crate::relay::room::{Room, RoomIds};
 use crate::protocol::packet::PacketType;
@@ -18,6 +19,7 @@ struct DisconnectInfo {
 
 pub struct RelayServer {
     transport: PaperInterface,
+    http: Option<HttpWrapper>,
     pub config: Config,
 
     /// App ID -> App
@@ -31,9 +33,10 @@ pub struct RelayServer {
 }
 
 impl RelayServer {
-    pub fn new(transport: PaperInterface, config: Config) -> Self {
+    pub fn new(transport: PaperInterface, http: Option<HttpWrapper>, config: Config) -> Self {
         Self {
             transport,
+            http,
             config,
             apps: HashMap::new(),
             sessions: HashMap::new(),
@@ -167,7 +170,7 @@ impl RelayServer {
     /// Handlers
 
     async fn authenticate_client(&mut self, sender_id: u64, app_id: String, version: String) {
-        if !self.is_app_allowed(app_id.as_str()) {
+        if !self.app_allowed(app_id.as_str()).await {
             self.send_packet(
                 sender_id,
                 PacketType::Error {
@@ -422,7 +425,20 @@ impl RelayServer {
         }
     }
 
-    fn is_app_allowed(&self, app: &str) -> bool {
+    async fn app_allowed(&mut self, app: &str) -> bool {
+        match self.http.as_mut() {
+            Some(http) => match http.app_exists(app).await {
+                Ok(exists) => exists,
+                Err(e) => {
+                    warn!("failed to check app_exists: {}", e);
+                    self.check_local_whitelist(app)
+                }
+            },
+            None => self.check_local_whitelist(app),
+        }
+    }
+
+    fn check_local_whitelist(&self, app: &str) -> bool {
         let whitelist = &self.config.app_whitelist;
 
         if whitelist.is_empty() {
