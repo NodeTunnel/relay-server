@@ -1,6 +1,6 @@
 udp_bind_address = "0.0.0.0:8080"
 app_whitelist = []
-allowed_versions = ["1.0.0_beta", "1.0.1_beta"]
+allowed_versions = ["1.1.0_beta"]
 relay_id = "E"
 pocketbase_url = "http://127.0.0.1:8090"
 pocketbase_email = "relay-server@nodetunnel.io"

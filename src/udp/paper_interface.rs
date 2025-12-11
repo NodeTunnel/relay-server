@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use paperudp::channel::DecodeResult;
 use paperudp::packet::PacketType;
-use tracing::warn;
+use tracing::{debug, info, warn};
 use crate::udp::error::UdpError;
 use crate::udp::sessions::ConnectionManager;
 use super::common::{ServerEvent, TransferChannel};
@@ -35,9 +35,13 @@ impl PaperInterface {
             match self.socket.try_recv_from(&mut buf) {
                 Ok((len, addr)) => {
                     if len == 0 { continue; }
-                    let session = self.connection_manager.get_or_create(addr);
-                    session.last_heard_from = Instant::now();
-                    let res = session.channel.decode(&buf[..len]);
+
+                    let (session_id, session_addr, res) = {
+                        let session = self.connection_manager.get_or_create(addr);
+                        session.last_heard_from = Instant::now();
+                        let res = session.channel.decode(&buf[..len]);
+                        (session.id, session.addr, res)
+                    };
 
                     match res {
                         DecodeResult::Unreliable { payload } => {
@@ -48,7 +52,7 @@ impl PaperInterface {
                                 }
 
                                 self.pending_events.push(ServerEvent::PacketReceived {
-                                    client_id: session.id,
+                                    client_id: session_id,
                                     data: p,
                                     channel: TransferChannel::Unreliable,
                                 });
@@ -57,23 +61,26 @@ impl PaperInterface {
                         DecodeResult::Reliable { payload, ack_packet, .. } => {
                             for p in payload {
                                 self.pending_events.push(ServerEvent::PacketReceived {
-                                    client_id: session.id,
+                                    client_id: session_id,
                                     data: p,
                                     channel: TransferChannel::Reliable,
                                 });
                             }
 
                             if let Some(ack) = ack_packet {
-                                if let Err(e) = self.socket.send_to(
-                                    ack.as_slice(),
-                                    session.addr
-                                ).await {
-                                    warn!("failed to send ack to {}: {}", session.addr, e);
+                                if let Err(e) = self.socket
+                                    .send_to(ack.as_slice(), session_addr)
+                                    .await
+                                {
+                                    warn!("failed to send ack to {}: {}", session_addr, e);
                                 }
                             }
                         }
                         DecodeResult::Ack { .. } => {}
-                        DecodeResult::None => {}
+                        DecodeResult::None => {
+                            debug!("unknown packet: {:?}", &buf[..len]);
+                            self.remove_client(&session_id);
+                        }
                     }
                 }
                 Err(e) => match e.kind() {

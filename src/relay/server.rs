@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time::{Instant};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use crate::config::loader::Config;
 use crate::http::wrapper::HttpWrapper;
 use crate::relay::{App, ClientSession};
@@ -85,6 +85,7 @@ impl RelayServer {
     async fn handle_packet(&mut self, client: u64, data: Vec<u8>, channel: TransferChannel) {
         match PacketType::from_bytes(&data) {
             Ok(PacketType::Authenticate { app_id, version }) => {
+                debug!("authenticating: {}", client);
                 self.authenticate_client(client, app_id, version).await;
             }
             Ok(packet_type) => {
@@ -97,12 +98,15 @@ impl RelayServer {
                         },
                         TransferChannel::Reliable,
                     ).await;
+                    debug!("unauthorized: {}", client);
                     return;
                 }
+                debug!("handling authorized pkt: {:?} for: {}", packet_type, client);
                 self.handle_authorized_packet(client, packet_type, channel).await;
             }
             _ => {
-                warn!("unexpected packet type from {}: {:?}", client, data);
+                warn!("unexpected packet type from {}: {:?}. forcing disconnect", client, data);
+                self.force_disconnect(client).await;
             }
         }
     }
@@ -143,10 +147,10 @@ impl RelayServer {
     async fn handle_event(&mut self, event: ServerEvent) {
         match event {
             ServerEvent::ClientDisconnected { client_id } => {
-
                 self.handle_disconnect(client_id).await;
             }
             ServerEvent::PacketReceived { client_id, data, channel } => {
+                debug!("got packet: {:?}", data);
                 self.handle_packet(client_id, data, channel).await;
             }
         }
@@ -163,7 +167,12 @@ impl RelayServer {
         }
     }
 
-    pub fn force_disconnect(&mut self, target_client: u64) {
+    pub async fn force_disconnect(&mut self, target_client: u64) {
+        self.send_packet(
+            target_client,
+            PacketType::ForceDisconnect,
+            TransferChannel::Reliable
+        ).await;
         self.transport.remove_client(&target_client);
     }
 
@@ -180,7 +189,7 @@ impl RelayServer {
                 TransferChannel::Reliable,
             ).await;
 
-            self.force_disconnect(sender_id);
+            self.force_disconnect(sender_id).await;
 
             return;
         }
@@ -197,7 +206,7 @@ impl RelayServer {
                 TransferChannel::Reliable,
             ).await;
 
-            self.force_disconnect(sender_id);
+            self.force_disconnect(sender_id).await;
             return;
         }
 
@@ -403,7 +412,7 @@ impl RelayServer {
         for peer_id in peers_to_kick {
             self.sessions.remove(&peer_id);
             self.client_to_room.remove(&peer_id);
-            self.force_disconnect(peer_id);
+            self.force_disconnect(peer_id).await;
         }
     }
 
