@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
+use tokio::signal;
 use tracing::{error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 use crate::http::wrapper::HttpWrapper;
@@ -48,5 +49,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut server = RelayServer::new(transport, http, config);
     info!("relay server started");
-    server.run().await
+    tokio::select! {
+        res = server.run() => {
+            if let Err(e) = res {
+                error!("server error: {}", e);
+            }
+        }
+        _ = signal::ctrl_c() => {
+            info!("shutdown signal received");
+        }
+    }
+
+    info!("shutting down server");
+    server.cleanup().await;
+
+    Ok(())
 }

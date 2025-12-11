@@ -77,7 +77,6 @@ impl RelayServer {
                 self.transport.do_resends(Duration::from_millis(100)).await;
                 last_resend = now;
             }
-
             tokio::task::yield_now().await;
         }
     }
@@ -234,6 +233,21 @@ impl RelayServer {
 
         let mut room = Room::new(room_id.clone(), sender_id, is_public, name, max_players);
         let peer_id = room.add_peer(sender_id);
+
+        if is_public && let Some(ref mut http) = self.http {
+            if let Err(e) = http
+                .create_room(
+                    "US East",
+                    &app_id,
+                    &room.id,
+                    &room.name,
+                    &room.max_players,
+                )
+                .await
+            {
+                warn!("failed to create room in database: {}", e);
+            }
+        }
 
         app.add_room(room);
         self.client_to_room.insert(sender_id, (app_id.clone(), room_id.clone()));
@@ -400,10 +414,8 @@ impl RelayServer {
     }
 
     async fn handle_host_disconnect(&mut self, app_id: String, room_id: String, peers_to_kick: Vec<u64>) {
-        if let Some(app) = self.apps.get_mut(&app_id) {
-            self.room_ids.free(&room_id);
-            app.remove_room(&room_id);
-        }
+        info!("host disconnected");
+        self.remove_room(&app_id, &room_id).await;
 
         for peer_id in &peers_to_kick {
             self.send_packet(*peer_id, PacketType::ForceDisconnect, TransferChannel::Reliable).await;
@@ -411,21 +423,15 @@ impl RelayServer {
 
         for peer_id in peers_to_kick {
             self.sessions.remove(&peer_id);
-            self.client_to_room.remove(&peer_id);
             self.force_disconnect(peer_id).await;
         }
     }
 
     async fn handle_peer_disconnect(&mut self, app_id: String, room_id: String, client_id: u64, peer_godot_id: i32, other_peers: Vec<u64>) {
+        info!("peer disconnected");
         if let Some(app) = self.apps.get_mut(&app_id) {
             if let Some(room) = app.get_room(&room_id) {
                 room.remove_peer(client_id);
-
-                if room.is_empty() {
-                    self.room_ids.free(&room_id);
-                    app.remove_room(&room_id);
-                    return;
-                }
             }
         }
 
@@ -447,6 +453,19 @@ impl RelayServer {
         }
     }
 
+    async fn remove_room(&mut self, app_id: &str, room_id: &str) {
+        if let Some(app) = self.apps.get_mut(app_id) {
+            self.room_ids.free(&room_id);
+            app.remove_room(&room_id);
+        }
+
+        if let Some(ref mut http) = self.http {
+            if let Err(e) = http.delete_room(&room_id).await {
+                warn!("http failed to delete room: {}", e);
+            }
+        }
+    }
+
     fn check_local_whitelist(&self, app: &str) -> bool {
         let whitelist = &self.config.app_whitelist;
 
@@ -460,5 +479,28 @@ impl RelayServer {
     fn is_version_allowed(&self, version: &str) -> bool {
         let versions = &self.config.allowed_versions;
         versions.contains(&version.to_string())
+    }
+
+    pub async fn cleanup(&mut self) {
+        let mut disconnects: Vec<u64> = Vec::new();
+        let mut to_remove: Vec<(String, String)> = Vec::new();
+
+        for (app_id, app) in self.apps.iter_mut() {
+            for (room_id, room) in app.get_rooms() {
+                disconnects.extend(room.get_renet_ids().iter().copied());
+                to_remove.push((app_id.clone(), room_id.clone()));
+            }
+        }
+
+        info!("disconnecting {} peers", disconnects.len());
+
+        for id in disconnects {
+            self.send_packet(id, PacketType::ForceDisconnect, TransferChannel::Reliable)
+                .await;
+        }
+
+        for (app_id, room_id) in to_remove {
+            self.remove_room(&app_id, &room_id).await;
+        }
     }
 }

@@ -1,5 +1,5 @@
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use crate::http::error::HttpError;
 
 #[derive(Deserialize)]
@@ -62,9 +62,51 @@ impl HttpWrapper {
         Ok(res)
     }
 
+    async fn delete(&mut self, path: &str) -> Result<reqwest::Response, HttpError> {
+        let url = format!("{}{}", self.base_url, path);
+
+        let res = self.client.delete(&url).bearer_auth(&self.token).send().await?;
+
+        if res.status().as_u16() == 401 {
+            self.refresh_token().await?;
+            return Ok(self.client.delete(&url).bearer_auth(&self.token).send().await?);
+        }
+
+        Ok(res)
+    }
+
+    async fn post_json<B: Serialize + ?Sized>(
+        &mut self,
+        path: &str,
+        body: &B,
+    ) -> Result<reqwest::Response, HttpError> {
+        let url = format!("{}{}", self.base_url, path);
+
+        let res = self.client
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(body)
+            .send()
+            .await?;
+
+        if res.status().as_u16() == 401 {
+            self.refresh_token().await?;
+            return Ok(
+                self.client
+                    .post(&url)
+                    .bearer_auth(&self.token)
+                    .json(body)
+                    .send()
+                    .await?
+            );
+        }
+
+        Ok(res)
+    }
+
     pub async fn app_exists(&mut self, app_id: &str) -> Result<bool, HttpError> {
         let res = self.get(&format!(
-            "/api/collections/apps/records?filter=(id='{}')&limit=1",
+            "/api/collections/apps/records?filter=(app_id='{}')&limit=1",
             app_id
         )).await?;
 
@@ -74,5 +116,38 @@ impl HttpWrapper {
 
         let list: ListResponse = res.json().await?;
         Ok(!list.items.is_empty())
+    }
+
+    pub async fn create_room(&mut self, region: &str, app_id: &str, room_id: &str, name: &str, max_players: &i32) -> Result<(), HttpError> {
+        let body = serde_json::json!({
+            "id": room_id,
+            "region": region,
+            "players": 1,
+            "max_players": max_players,
+            "name": name,
+            "app_id": app_id,
+        });
+
+        let res = self
+            .post_json("/api/collections/rooms/records", &body)
+            .await?;
+
+        if !res.status().is_success() {
+            return Err(HttpError::UnexpectedStatus(res.status()));
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete_room(&mut self, room_id: &str) -> Result<(), HttpError> {
+        let res = self
+            .delete(&format!("/api/collections/rooms/records/{}", room_id))
+            .await?;
+
+        if !res.status().is_success() {
+            return Err(HttpError::UnexpectedStatus(res.status()));
+        }
+
+        Ok(())
     }
 }
