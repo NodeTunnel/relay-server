@@ -127,10 +127,13 @@ impl RelayServer {
                 self.send_rooms(client_id, session_app_id.clone()).await;
             }
             PacketType::JoinRoom { room_id } => {
-                self.join_room(client_id, session_app_id.clone(), room_id).await
+                self.join_room(client_id, session_app_id.clone(), room_id).await;
             }
             PacketType::GameData { data, from_peer } => {
                 self.route_game_data(client_id, from_peer, data, channel).await;
+            }
+            PacketType::UpdateRoom { room_id, metadata } => {
+                self.update_room(client_id, session_app_id.clone(), room_id, metadata).await;
             }
             _ => warn!("Unexpected authorized packet"),
         }
@@ -312,6 +315,37 @@ impl RelayServer {
             },
             TransferChannel::Reliable
         ).await;
+    }
+
+    async fn update_room(&mut self, sender_id: u64, app_id: String, room_id: String, metadata: String) {
+        let app = self.apps.get_mut(&app_id).expect("App exists");
+        let Some(room) = app.get_room(&room_id) else {
+            self.send_packet(
+                sender_id,
+                PacketType::Error {
+                    error_code: 404,
+                    error_message: "Room not found".into(),
+                },
+                TransferChannel::Reliable,
+            ).await;
+            return;
+        };
+
+        room.metadata = metadata;
+
+        if room.is_public && let Some(ref mut http) = self.http {
+            if let Err(e) = http
+                .update_room(
+                    "US East",
+                    &app_id,
+                    &room.id,
+                    &room.metadata,
+                )
+                .await
+            {
+                warn!("failed to create room in database: {}", e);
+            }
+        }
     }
 
     async fn route_game_data(&mut self, sender_id: u64, target_peer: i32, data: Vec<u8>, channel: TransferChannel) {

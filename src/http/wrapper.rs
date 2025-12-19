@@ -104,6 +104,35 @@ impl HttpWrapper {
         Ok(res)
     }
 
+    async fn patch_json<B: Serialize + ?Sized>(
+        &mut self,
+        path: &str,
+        body: &B,
+    ) -> Result<reqwest::Response, HttpError> {
+        let url = format!("{}{}", self.base_url, path);
+
+        let res = self.client
+            .patch(&url)
+            .bearer_auth(&self.token)
+            .json(body)
+            .send()
+            .await?;
+
+        if res.status().as_u16() == 401 {
+            self.refresh_token().await?;
+            return Ok(
+                self.client
+                    .patch(&url)
+                    .bearer_auth(&self.token)
+                    .json(body)
+                    .send()
+                    .await?
+            );
+        }
+
+        Ok(res)
+    }
+
     pub async fn app_exists(&mut self, app_id: &str) -> Result<bool, HttpError> {
         let res = self.get(&format!(
             "/api/collections/apps/records?filter=(app_id='{}')&limit=1",
@@ -128,6 +157,25 @@ impl HttpWrapper {
 
         let res = self
             .post_json("/api/collections/rooms/records", &body)
+            .await?;
+
+        if !res.status().is_success() {
+            return Err(HttpError::UnexpectedStatus(res.status()));
+        }
+
+        Ok(())
+    }
+
+    pub async fn update_room(&mut self, region: &str, app_id: &str, room_id: &str, metadata: &str) -> Result<(), HttpError> {
+        let body = serde_json::json!({
+            "id": room_id,
+            "region": region,
+            "metadata": metadata,
+            "app_id": app_id,
+        });
+
+        let res = self
+            .patch_json(&format!("/api/collections/rooms/records/{}", room_id), &body)
             .await?;
 
         if !res.status().is_success() {
