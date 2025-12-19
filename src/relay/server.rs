@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time::{Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use crate::config::loader::Config;
 use crate::http::wrapper::HttpWrapper;
 use crate::relay::{App, ClientSession};
@@ -46,38 +46,31 @@ impl RelayServer {
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        let mut last_resend = Instant::now();
-        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(1));
-        cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut cleanup = tokio::time::interval(Duration::from_secs(1));
+        let mut resend  = tokio::time::interval(Duration::from_millis(50));
+
+        cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
-                Ok(_) = self.transport.socket.readable() => {
-                    match self.transport.recv_events().await {
-                        Ok(events) => {
-                            for event in events {
-                                self.handle_event(event).await;
-                            }
-                        }
-                        Err(e) => {
-                            error!("recv_events error: {}", e);
-                            return Err(e.into());
-                        }
-                    }
-                }
-
-                _ = cleanup_interval.tick() => {
-                    self.transport.cleanup_sessions(Duration::from_secs(5)).await;
+            result = self.transport.recv_events() => {
+                let events = result?;
+                for event in events {
+                    self.handle_event(event).await;
                 }
             }
 
-            let now = Instant::now();
+            _ = cleanup.tick() => {
+                for client_id in self.transport.connection_manager.cleanup_sessions(Duration::from_secs(5)) {
+                    self.handle_event(ServerEvent::ClientDisconnected { client_id }).await;
+                }
+            }
 
-            if now.duration_since(last_resend) > Duration::from_millis(50) {
+            _ = resend.tick() => {
                 self.transport.do_resends(Duration::from_millis(100)).await;
-                last_resend = now;
             }
-            tokio::task::yield_now().await;
+        }
         }
     }
 
