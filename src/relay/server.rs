@@ -54,23 +54,23 @@ impl RelayServer {
 
         loop {
             tokio::select! {
-            result = self.transport.recv_events() => {
-                let events = result?;
-                for event in events {
-                    self.handle_event(event).await;
+                result = self.transport.recv_events() => {
+                    let events = result?;
+                    for event in events {
+                        self.handle_event(event).await;
+                    }
+                }
+
+                _ = cleanup.tick() => {
+                    for client_id in self.transport.connection_manager.cleanup_sessions(Duration::from_secs(5)) {
+                        self.handle_event(ServerEvent::ClientDisconnected { client_id }).await;
+                    }
+                }
+
+                _ = resend.tick() => {
+                    self.transport.do_resends(Duration::from_millis(100)).await;
                 }
             }
-
-            _ = cleanup.tick() => {
-                for client_id in self.transport.connection_manager.cleanup_sessions(Duration::from_secs(5)) {
-                    self.handle_event(ServerEvent::ClientDisconnected { client_id }).await;
-                }
-            }
-
-            _ = resend.tick() => {
-                self.transport.do_resends(Duration::from_millis(100)).await;
-            }
-        }
         }
     }
 
