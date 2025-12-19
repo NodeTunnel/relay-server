@@ -120,8 +120,8 @@ impl RelayServer {
         };
 
         match packet_type {
-            PacketType::CreateRoom { is_public, name, max_players } => {
-                self.create_room(client_id, session_app_id.clone(), is_public, name, max_players).await;
+            PacketType::CreateRoom { is_public, metadata } => {
+                self.create_room(client_id, session_app_id.clone(), is_public, metadata).await;
             }
             PacketType::ReqRooms => {
                 self.send_rooms(client_id, session_app_id.clone()).await;
@@ -219,12 +219,12 @@ impl RelayServer {
         ).await;
     }
 
-    async fn create_room(&mut self, sender_id: u64, app_id: String, is_public: bool, name: String, max_players: i32) {
+    async fn create_room(&mut self, sender_id: u64, app_id: String, is_public: bool, metadata: String) {
         let app = self.apps.get_mut(&app_id).expect("App exists");
 
         let room_id = format!("{}{}", self.config.relay_id, self.room_ids.generate());
 
-        let mut room = Room::new(room_id.clone(), sender_id, is_public, name, max_players);
+        let mut room = Room::new(room_id.clone(), sender_id, is_public, metadata);
         let peer_id = room.add_peer(sender_id);
 
         if is_public && let Some(ref mut http) = self.http {
@@ -233,8 +233,7 @@ impl RelayServer {
                     "US East",
                     &app_id,
                     &room.id,
-                    &room.name,
-                    &room.max_players,
+                    &room.metadata,
                 )
                 .await
             {
@@ -288,18 +287,6 @@ impl RelayServer {
                 ).await;
                 return;
             };
-
-            if room.is_full() {
-                self.send_packet(
-                    sender_id,
-                    PacketType::Error {
-                        error_code: 422,
-                        error_message: "Room full".into(),
-                    },
-                    TransferChannel::Reliable,
-                ).await;
-                return;
-            }
 
             let peer_id = room.add_peer(sender_id);
             let host_id = room.get_host();

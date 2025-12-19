@@ -39,8 +39,7 @@ impl RoomIds {
 pub struct Room {
     pub id: String,
     pub is_public: bool,
-    pub name: String,
-    pub max_players: i32,
+    pub metadata: String,
     host_id: u64,
     godot_to_client: HashMap<i32, u64>,
     client_to_godot: HashMap<u64, i32>,
@@ -48,12 +47,11 @@ pub struct Room {
 }
 
 impl Room {
-    pub fn new(id: String, host_id: u64, is_public: bool, name: String, max_players: i32) -> Self {
+    pub fn new(id: String, host_id: u64, is_public: bool, metadata: String) -> Self {
         Self {
             id,
             is_public,
-            name,
-            max_players,
+            metadata,
             host_id,
             client_to_godot: HashMap::new(),
             godot_to_client: HashMap::new(),
@@ -64,9 +62,7 @@ impl Room {
     pub fn to_info(&self) -> RoomInfo {
         RoomInfo {
             id: self.id.clone(),
-            players: self.get_renet_ids().len() as i32,
-            name: self.name.clone(),
-            max_players: self.max_players.clone(),
+            metadata: self.metadata.clone(),
         }
     }
 
@@ -113,13 +109,5 @@ impl Room {
 
     pub fn is_empty(&self) -> bool {
         self.client_to_godot.is_empty()
-    }
-
-    pub fn is_full(&self) -> bool {
-        if self.max_players == -1 {
-            return false;
-        }
-
-        self.get_player_count() >= self.max_players
     }
 }

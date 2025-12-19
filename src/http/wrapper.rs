@@ -118,13 +118,11 @@ impl HttpWrapper {
         Ok(!list.items.is_empty())
     }
 
-    pub async fn create_room(&mut self, region: &str, app_id: &str, room_id: &str, name: &str, max_players: &i32) -> Result<(), HttpError> {
+    pub async fn create_room(&mut self, region: &str, app_id: &str, room_id: &str, metadata: &str) -> Result<(), HttpError> {
         let body = serde_json::json!({
             "id": room_id,
             "region": region,
-            "players": 1,
-            "max_players": max_players,
-            "name": name,
+            "metadata": metadata,
             "app_id": app_id,
         });
 
