@@ -126,8 +126,11 @@ impl RelayServer {
             PacketType::ReqRooms => {
                 self.send_rooms(client_id, session_app_id.clone()).await;
             }
-            PacketType::JoinRoom { room_id } => {
-                self.join_room(client_id, session_app_id.clone(), room_id).await;
+            PacketType::ReqJoin { room_id, metadata } => {
+                self.recv_join_req(&client_id, &session_app_id, &room_id, &metadata).await;
+            }
+            PacketType::JoinRes { target_id, room_id, allowed } => {
+                self.recv_join_res(&session_app_id, &target_id, &room_id, &allowed).await;
             }
             PacketType::GameData { data, from_peer } => {
                 self.route_game_data(client_id, from_peer, data, channel).await;
@@ -276,12 +279,12 @@ impl RelayServer {
         ).await;
     }
 
-    async fn join_room(&mut self, sender_id: u64, app_id: String, room_id: String) {
-        let (peer_id, host_id) = {
-            let app = self.apps.get_mut(&app_id).expect("App exists");
+    async fn recv_join_req(&mut self, sender_id: &u64, app_id: &str, room_id: &str, metadata: &str) {
+        let host_id = {
+            let app = self.apps.get_mut(app_id).expect("App exists");
             let Some(room) = app.get_room(&room_id) else {
                 self.send_packet(
-                    sender_id,
+                    sender_id.clone(),
                     PacketType::Error {
                         error_code: 404,
                         error_message: "Room not found".into(),
@@ -291,29 +294,70 @@ impl RelayServer {
                 return;
             };
 
-            let peer_id = room.add_peer(sender_id);
-            let host_id = room.get_host();
-
-            (peer_id, host_id)
+            room.get_host()
         };
-
-        self.client_to_room.insert(sender_id, (app_id, room_id.clone()));
-
-        self.send_packet(
-            sender_id,
-            PacketType::ConnectedToRoom {
-                room_id: room_id.clone(),
-                peer_id,
-            },
-            TransferChannel::Reliable,
-        ).await;
 
         self.send_packet(
             host_id,
-            PacketType::PeerJoinedRoom {
-                peer_id,
+            PacketType::PeerJoinAttempt {
+                target_id: sender_id.clone(),
+                metadata: metadata.to_string()
             },
             TransferChannel::Reliable
+        ).await;
+    }
+
+    async fn recv_join_res(&mut self, app_id: &str, target_id: &u64, room_id: &str, allowed: &bool) {
+        if *allowed {
+            let (peer_id, host_id) = {
+                let app = self.apps.get_mut(app_id).expect("App exists");
+                let Some(room) = app.get_room(&room_id) else {
+                    self.send_packet(
+                        *target_id,
+                        PacketType::Error {
+                            error_code: 404,
+                            error_message: "Room not found".into(),
+                        },
+                        TransferChannel::Reliable,
+                    ).await;
+                    return;
+                };
+
+                let peer_id = room.add_peer(*target_id);
+                let host_id = room.get_host();
+
+                (peer_id, host_id)
+            };
+
+            self.client_to_room.insert(*target_id, (app_id.to_string(), room_id.to_string()));
+
+            self.send_packet(
+                *target_id,
+                PacketType::ConnectedToRoom {
+                    room_id: room_id.to_string(),
+                    peer_id,
+                },
+                TransferChannel::Reliable,
+            ).await;
+
+            self.send_packet(
+                host_id,
+                PacketType::PeerJoinedRoom {
+                    peer_id,
+                },
+                TransferChannel::Reliable
+            ).await;
+
+            return;
+        }
+
+        self.send_packet(
+            *target_id,
+            PacketType::Error {
+                error_code: 401,
+                error_message: "Room host denied entry".into(),
+            },
+            TransferChannel::Reliable,
         ).await;
     }
 
