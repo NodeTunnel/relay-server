@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use paperudp::channel::DecodeResult;
 use paperudp::packet::PacketType;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use crate::udp::error::UdpError;
 use crate::udp::sessions::ConnectionManager;
 use super::common::{ServerEvent, TransferChannel};

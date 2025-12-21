@@ -4,7 +4,6 @@ use std::time::Duration;
 use tokio::time::{Instant};
 use tracing::{debug, info, warn};
 use crate::config::loader::Config;
-use crate::http::wrapper::HttpWrapper;
 use crate::relay::{App, ClientSession};
 use crate::relay::room::{Room, RoomIds};
 use crate::protocol::packet::PacketType;
@@ -19,7 +18,6 @@ struct DisconnectInfo {
 
 pub struct RelayServer {
     transport: PaperInterface,
-    http: Option<HttpWrapper>,
     pub config: Config,
 
     /// App ID -> App
@@ -33,10 +31,9 @@ pub struct RelayServer {
 }
 
 impl RelayServer {
-    pub fn new(transport: PaperInterface, http: Option<HttpWrapper>, config: Config) -> Self {
+    pub fn new(transport: PaperInterface, config: Config) -> Self {
         Self {
             transport,
-            http,
             config,
             apps: HashMap::new(),
             sessions: HashMap::new(),
@@ -233,20 +230,6 @@ impl RelayServer {
         let mut room = Room::new(room_id.clone(), sender_id, is_public, metadata);
         let peer_id = room.add_peer(sender_id);
 
-        if is_public && let Some(ref mut http) = self.http {
-            if let Err(e) = http
-                .create_room(
-                    "US East",
-                    &app_id,
-                    &room.id,
-                    &room.metadata,
-                )
-                .await
-            {
-                warn!("failed to create room in database: {}", e);
-            }
-        }
-
         app.add_room(room);
         self.client_to_room.insert(sender_id, (app_id.clone(), room_id.clone()));
 
@@ -376,20 +359,6 @@ impl RelayServer {
         };
 
         room.metadata = metadata;
-
-        if room.is_public && let Some(ref mut http) = self.http {
-            if let Err(e) = http
-                .update_room(
-                    "US East",
-                    &app_id,
-                    &room.id,
-                    &room.metadata,
-                )
-                .await
-            {
-                warn!("failed to create room in database: {}", e);
-            }
-        }
     }
 
     async fn route_game_data(&mut self, sender_id: u64, target_peer: i32, data: Vec<u8>, channel: TransferChannel) {
@@ -499,28 +468,14 @@ impl RelayServer {
     }
 
     async fn app_allowed(&mut self, app: &str) -> bool {
-        match self.http.as_mut() {
-            Some(http) => match http.app_exists(app).await {
-                Ok(exists) => exists,
-                Err(e) => {
-                    warn!("failed to check app_exists: {}", e);
-                    self.check_local_whitelist(app)
-                }
-            },
-            None => self.check_local_whitelist(app),
-        }
+        // TODO: check remote database
+        self.check_local_whitelist(app)
     }
 
     async fn remove_room(&mut self, app_id: &str, room_id: &str) {
         if let Some(app) = self.apps.get_mut(app_id) {
             self.room_ids.free(&room_id);
             app.remove_room(&room_id);
-        }
-
-        if let Some(ref mut http) = self.http {
-            if let Err(e) = http.delete_room(&room_id).await {
-                warn!("http failed to delete room: {}", e);
-            }
         }
     }
 
