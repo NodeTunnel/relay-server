@@ -1,0 +1,19 @@
+# remove ".example" from this file name to run the server
+
+# the IP address and port to bind the server to
+udp_bind_address = "0.0.0.0:8080"
+# a list of versions compatible with this server,
+# you probably don't want to touch this
+allowed_versions = ["1.1.0_beta"]
+# a list of app IDs allowed to join this server.
+# leave blank to allow any.
+# whitelist = ["my_app", "my_other_app"]
+whitelist = []
+# a remote endpoint to check if an app is allowed to connect.
+# leave empty to use the local whitelist (see above).
+remote_whitelist_endpoint = ""
+# the token required for the remote endpoint.
+remote_whitelist_token = ""
+# this is prepended to room IDs to assist with regional relay servers.
+# useful for routing joining peers to the correct relay address.
+relay_id = "LOCAL"

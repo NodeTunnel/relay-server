@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
+use reqwest::{Client, StatusCode};
 use tokio::time::{Instant};
 use tracing::{debug, info, warn};
 use crate::config::loader::Config;
@@ -18,6 +19,8 @@ struct DisconnectInfo {
 
 pub struct RelayServer {
     transport: PaperInterface,
+    http_client: Client,
+
     pub config: Config,
 
     /// App ID -> App
@@ -34,6 +37,7 @@ impl RelayServer {
     pub fn new(transport: PaperInterface, config: Config) -> Self {
         Self {
             transport,
+            http_client: Client::new(),
             config,
             apps: HashMap::new(),
             sessions: HashMap::new(),
@@ -467,11 +471,6 @@ impl RelayServer {
         }
     }
 
-    async fn app_allowed(&mut self, app: &str) -> bool {
-        // TODO: check remote database
-        self.check_local_whitelist(app)
-    }
-
     async fn remove_room(&mut self, app_id: &str, room_id: &str) {
         if let Some(app) = self.apps.get_mut(app_id) {
             self.room_ids.free(&room_id);
@@ -479,13 +478,51 @@ impl RelayServer {
         }
     }
 
+    async fn app_allowed(&mut self, app: &str) -> bool {
+        let remote = &self.config.remote_whitelist_endpoint;
+        let token = &self.config.remote_whitelist_token;
+
+        if remote.is_empty() || token.is_empty() {
+            self.check_local_whitelist(app)
+        } else {
+            match self.check_remote_whitelist(remote, app, token).await {
+                Ok(res) => res,
+                Err(e) => {
+                    warn!("failed to check remote whitelist, defaulting to local: {}", e);
+                    self.check_local_whitelist(app)
+                }
+            }
+        }
+    }
+
     fn check_local_whitelist(&self, app: &str) -> bool {
-        let whitelist = &self.config.app_whitelist;
+        let whitelist = &self.config.whitelist;
 
         if whitelist.is_empty() {
             true
         } else {
             whitelist.contains(&app.to_string())
+        }
+    }
+
+    async fn check_remote_whitelist(
+        &self,
+        endpoint: &str,
+        app: &str,
+        relay_token: &str,
+    ) -> Result<bool, Box<dyn Error>> {
+        let url = format!("{}/{}", endpoint, app);
+
+        let res = self.http_client
+            .get(&url)
+            .header("X-Relay-Token", relay_token)
+            .send()
+            .await?;
+
+        match res.status() {
+            StatusCode::OK => Ok(true),
+            StatusCode::NOT_FOUND => Ok(false),
+            s => Err(format!("unexpected status from endpoint: {}", s).into()),
         }
     }
 
