@@ -79,10 +79,6 @@ impl Room {
         self.client_to_godot.keys().copied().collect()
     }
 
-    pub fn get_godot_ids(&self) -> Vec<i32> {
-        self.godot_to_client.keys().copied().collect()
-    }
-
     pub fn get_godot_id(&self, client_id: u64) -> Option<i32> {
         self.client_to_godot.get(&client_id).copied()
     }
@@ -101,13 +97,5 @@ impl Room {
         };
 
         self.godot_to_client.remove(&peer_id);
-    }
-
-    pub fn get_player_count(&self) -> i32 {
-        self.godot_to_client.len() as i32
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.client_to_godot.is_empty()
     }
 }
