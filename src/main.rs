@@ -1,3 +1,9 @@
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+#![warn(rust_2018_idioms)]
+#![warn(unused_qualifications)]
+#![warn(unused_crate_dependencies)]
+
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::signal;

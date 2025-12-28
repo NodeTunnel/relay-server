@@ -62,7 +62,7 @@ pub fn read_room_info(bytes: &[u8]) -> Result<(RoomInfo, &[u8]), ProtocolError> 
     let (id, r) = read_string(bytes)?;
     let (metadata, r) = read_string(r)?;
 
-    Ok((RoomInfo { id, metadata }, r))
+    Ok((RoomInfo { join_code: id, metadata }, r))
 }
 
 pub fn read_vec_room_info(bytes: &[u8]) -> Result<(Vec<RoomInfo>, &[u8]), ProtocolError> {
@@ -85,7 +85,7 @@ pub fn read_vec_room_info(bytes: &[u8]) -> Result<(Vec<RoomInfo>, &[u8]), Protoc
 pub fn push_vec_room_info(buf: &mut Vec<u8>, rooms: &[RoomInfo]) {
     push_i32(buf, rooms.len() as i32);
     for room in rooms {
-        push_string(buf, &room.id);
+        push_string(buf, &room.join_code);
         push_string(buf, &room.metadata);
     }
 }

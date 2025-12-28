@@ -4,7 +4,7 @@ use crate::protocol::serialize::{push_bool, push_i32, push_string, push_u64, pus
 
 #[derive(Debug, Clone)]
 pub struct RoomInfo {
-    pub id: String,
+    pub join_code: String,
     pub metadata: String,
 }
 
@@ -52,7 +52,7 @@ impl Packet {
                         name
                     }
                     Err(_) => {
-                        "".into()
+                        String::new()
                     }
                 };
 

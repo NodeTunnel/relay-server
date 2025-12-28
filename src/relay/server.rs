@@ -1,64 +1,38 @@
-use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
-use reqwest::{Client, StatusCode};
+use reqwest::{StatusCode};
 use tracing::{debug, info, warn};
 use crate::config::loader::Config;
-use crate::relay::App;
-use crate::relay::room::{Room, RoomIds};
-use crate::protocol::packet::Packet;
+use crate::relay::rooms::{Room, RoomIds};
+use crate::protocol::packet::{Packet, RoomInfo};
+use crate::relay::apps::Apps;
+use crate::relay::clients::{Client, ClientState, Clients};
 use crate::udp::common::{TransferChannel, ServerEvent};
 use crate::udp::paper_interface::PaperInterface;
 
-// TODO: make into enum
 struct DisconnectInfo {
     is_host: bool,
     godot_id: i32,
     other_peers: Vec<u64>,
 }
 
-#[derive(Clone)]
-enum GodotClientState {
-    Connected,
-    Authenticated { app_id: String },
-    InRoom { app_id: String, room_id: String }
-}
-
-struct GodotClient {
-    state: GodotClientState,
-}
-
-impl GodotClient {
-    pub fn new() -> Self {
-        Self {
-            state: GodotClientState::Connected
-        }
-    }
-}
-
 pub struct RelayServer {
     transport: PaperInterface,
-    http_client: Client,
+    http_client: reqwest::Client,
 
-    pub config: Config,
-
-    /// App ID -> App
-    pub apps: HashMap<String, App>,
-    /// ClientId -> GodotClient
-    clients: HashMap<u64, GodotClient>,
-    /// Room ID generator
-    room_ids: RoomIds,
+    config: Config,
+    apps: Apps,
+    clients: Clients,
 }
 
 impl RelayServer {
     pub fn new(transport: PaperInterface, config: Config) -> Self {
         Self {
             transport,
-            http_client: Client::new(),
+            http_client: reqwest::Client::new(),
             config,
-            apps: HashMap::new(),
-            clients: HashMap::new(),
-            room_ids: RoomIds::new(),
+            apps: Apps::new(),
+            clients: Clients::new(),
         }
     }
 
@@ -102,7 +76,7 @@ impl RelayServer {
     async fn handle_event(&mut self, event: ServerEvent) {
         match event {
             ServerEvent::ClientConnected { client_id } => {
-                self.clients.insert(client_id, GodotClient::new());
+                self.clients.create(client_id);
             }
             ServerEvent::ClientDisconnected { client_id } => {
                 self.handle_disconnect(client_id).await;
@@ -115,15 +89,11 @@ impl RelayServer {
     }
 
     async fn handle_packet(&mut self, from_client_id: u64, data: Vec<u8>, channel: TransferChannel) {
-        let client_state = {
-            let Some(client) = self.clients.get(&from_client_id) else {
-                // This means that the client is not in the list of connected clients.
-                // Likely a bug in the client or a malicious client.
-                warn!("received a packet from an invalid peer");
-                return;
-            };
-
-            client.state.clone()
+        let Some(client) = self.clients.get(from_client_id) else {
+            // This means that the client is not in the list of connected clients.
+            // Likely a bug in the client or a malicious client.
+            warn!("received a packet from an invalid peer");
+            return;
         };
 
         let Ok(packet) = Packet::from_bytes(&data) else {
@@ -131,11 +101,11 @@ impl RelayServer {
             return;
         };
 
-        match client_state {
-            GodotClientState::Connected => self.handle_unauthenticated_packet(from_client_id, &packet).await,
-            GodotClientState::Authenticated { app_id } => self.handle_authenticated_packet(from_client_id, &app_id, &packet).await,
-            GodotClientState::InRoom { app_id, room_id } => self.handle_in_room_packet(from_client_id, &app_id, &room_id, &packet, &channel).await
-        };
+        match client.state {
+            ClientState::Connected => self.handle_unauthenticated_packet(from_client_id, &packet).await,
+            ClientState::Authenticated { app_id } => self.handle_authenticated_packet(from_client_id, app_id, &packet).await,
+            ClientState::InRoom { app_id, room_id } => self.handle_in_room_packet(from_client_id, app_id, room_id, &packet, &channel).await
+        }
     }
 
     async fn handle_unauthenticated_packet(&mut self, from_client_id: u64, packet: &Packet) {
@@ -149,7 +119,7 @@ impl RelayServer {
         }
     }
 
-    async fn handle_authenticated_packet(&mut self, from_client_id: u64, client_app_id: &str, packet: &Packet) {
+    async fn handle_authenticated_packet(&mut self, from_client_id: u64, client_app_id: u64, packet: &Packet) {
         match packet {
             Packet::CreateRoom { is_public, metadata } =>
                 self.create_room(from_client_id, client_app_id, *is_public, metadata).await,
@@ -164,7 +134,7 @@ impl RelayServer {
         }
     }
 
-    async fn handle_in_room_packet(&mut self, from_client_id: u64, client_app_id: &str, client_room_id: &str, packet: &Packet, channel: &TransferChannel) {
+    async fn handle_in_room_packet(&mut self, from_client_id: u64, client_app_id: u64, client_room_id: u64, packet: &Packet, channel: &TransferChannel) {
         match packet {
             Packet::UpdateRoom { room_id, metadata } =>
                 self.update_room(from_client_id, client_app_id, client_room_id, metadata).await,
@@ -183,40 +153,32 @@ impl RelayServer {
     /// Authentication
     /// --------------
 
-    async fn authenticate_client(&mut self, sender_id: u64, app_id: &str, version: &str) {
+    async fn authenticate_client(&mut self, sender_id: u64, app_token: &str, version: &str) {
         // Check version
         if !self.is_version_allowed(version) {
-            let msg = format!("Version {} is not allowed", version);
-
-            self.send_packet(
-                sender_id,
-                &Packet::Error {
-                    error_code: 401,
-                    error_message: msg.into(),
-                },
-                TransferChannel::Reliable,
-            ).await;
-
+            let msg = format!("Version {version} is not allowed.");
+            self.send_err(sender_id, &msg).await;
             self.force_disconnect(sender_id).await;
             return;
         }
 
         // Check app whitelist
-        if !self.is_app_allowed(app_id).await {
+        if !self.is_app_allowed(app_token).await {
             // TODO: send error
             return;
         }
 
-        let Some(client) = self.clients.get_mut(&sender_id) else {
+        let Some(client) = self.clients.get_mut(sender_id) else {
             warn!("attempted to authenticate a missing client {}", sender_id);
             return;
         };
 
-        let app_id = app_id.to_string();
-        client.state = GodotClientState::Authenticated { app_id: app_id.clone() };
+        let app_id = match self.apps.get_by_token(app_token) {
+            Some(app) => app.id,
+            None => self.apps.create(app_token.to_string())
+        };
 
-        self.apps.entry(app_id.clone()).or_insert_with(|| App::new(app_id.clone()));
-
+        client.state = ClientState::Authenticated { app_id };
         self.send_packet(sender_id, &Packet::ClientAuthenticated, TransferChannel::Reliable, ).await;
     }
 
@@ -277,79 +239,66 @@ impl RelayServer {
     /// Room Management
     /// ---------------
 
-    async fn create_room(&mut self, sender_id: u64, app_id: &str, is_public: bool, metadata: &str) {
+    async fn create_room(&mut self, sender_id: u64, app_id: u64, is_public: bool, metadata: &str) {
         let Some(app) = self.apps.get_mut(app_id) else {
             warn!("attempted to create a room for a missing app: {}", app_id);
             return;
         };
 
-        let Some(client) = self.clients.get_mut(&sender_id) else {
+        let Some(client) = self.clients.get_mut(sender_id) else {
             warn!("attempted to create a room for a missing client: {}", sender_id);
             return;
         };
 
-        let room_id = format!("{}{}", self.config.relay_id, self.room_ids.generate());
-
-        let mut room = Room::new(room_id.clone(), sender_id, is_public, metadata.to_string());
+        let room = app.rooms.create(sender_id, is_public, metadata.to_string());
+        let join_code = room.join_code.clone();
         let peer_id = room.add_peer(sender_id);
 
-        client.state = GodotClientState::InRoom { app_id: app_id.to_string(), room_id: room_id.clone() };
-        app.add_room(room);
+        client.state = ClientState::InRoom { app_id, room_id: room.id };
 
         self.send_packet(
             sender_id,
             &Packet::ConnectedToRoom {
-                room_id,
+                room_id: join_code,
                 peer_id,
             },
             TransferChannel::Reliable,
         ).await;
     }
 
-    async fn send_rooms(&mut self, target: u64, app_id: &str) {
+    async fn send_rooms(&mut self, target: u64, app_id: u64) {
         let Some(app) = self.apps.get_mut(app_id) else {
             warn!("attempted to list rooms for a missing app: {}", app_id);
             return;
         };
 
-        let mut available_rooms = vec![];
-
-        for (_, room) in app.get_rooms() {
-            if room.is_public {
-                available_rooms.push(room.to_info());
-            }
-        }
+        let public_rooms: Vec<RoomInfo> = app.rooms.iter_mut()
+            .filter(|room| room.is_public)
+            .map(|room| room.to_info())
+            .collect();
 
         self.send_packet(
             target,
             &Packet::GetRooms {
-                rooms: available_rooms
+                rooms: public_rooms
             },
             TransferChannel::Reliable,
         ).await;
     }
 
-    async fn update_room(&mut self, sender_id: u64, app_id: &str, room_id: &str, metadata: &str) {
+    async fn update_room(&mut self, sender_id: u64, app_id: u64, room_id: u64, metadata: &str) {
         let app = self.apps.get_mut(app_id).expect("App exists");
-        let Some(room) = app.get_room(&room_id) else {
-            self.send_packet(
-                sender_id,
-                &Packet::Error {
-                    error_code: 404,
-                    error_message: "Room not found".into(),
-                },
-                TransferChannel::Reliable,
-            ).await;
+        let Some(room) = app.rooms.get_mut(room_id) else {
+            self.send_err(sender_id, "Room not found").await;
             return;
         };
 
         room.metadata = metadata.to_string();
     }
 
-    async fn remove_room(&mut self, app_id: &str, room_id: &str) {
+    async fn remove_room(&mut self, app_id: u64, room_id: u64) {
         if let Some(app) = self.apps.get_mut(app_id) {
-            self.room_ids.free(&room_id);
-            app.remove_room(&room_id);
+            app.rooms.remove(room_id);
         }
     }
 
@@ -357,22 +306,15 @@ impl RelayServer {
     /// Join Flow
     /// ---------
 
-    async fn recv_join_req(&mut self, sender_id: u64, app_id: &str, room_id: &str, metadata: &str) {
+    async fn recv_join_req(&mut self, sender_id: u64, app_id: u64, room_id: &str, metadata: &str) {
         let host_id = {
             let Some(app) = self.apps.get_mut(app_id) else {
                 warn!("attempted to handle join request for a missing app: {}", app_id);
                 return;
             };
 
-            let Some(room) = app.get_room(&room_id) else {
-                self.send_packet(
-                    sender_id.clone(),
-                    &Packet::Error {
-                        error_code: 404,
-                        error_message: "Room not found".into(),
-                    },
-                    TransferChannel::Reliable,
-                ).await;
+            let Some(room) = app.rooms.get_by_jc(room_id) else {
+                self.send_err(sender_id, "Room not found").await;
                 return;
             };
 
@@ -389,24 +331,17 @@ impl RelayServer {
         ).await;
     }
 
-    async fn recv_join_res(&mut self, app_id: &str, target_id: u64, room_id: &str, allowed: &bool) {
+    async fn recv_join_res(&mut self, app_id: u64, target_id: u64, room_id: u64, allowed: &bool) {
         if *allowed {
-            let Some(client) = self.clients.get_mut(&target_id) else {
+            let Some(client) = self.clients.get_mut(target_id) else {
                 warn!("attempted to handle join response for a missing client: {}", target_id);
                 return;
             };
 
             let (peer_id, host_id) = {
                 let app = self.apps.get_mut(app_id).expect("App exists");
-                let Some(room) = app.get_room(&room_id) else {
-                    self.send_packet(
-                        target_id,
-                        &Packet::Error {
-                            error_code: 404,
-                            error_message: "Room not found".into(),
-                        },
-                        TransferChannel::Reliable,
-                    ).await;
+                let Some(room) = app.rooms.get_mut(room_id) else {
+                    self.send_err(target_id, "Room not found").await;
                     return;
                 };
 
@@ -416,7 +351,7 @@ impl RelayServer {
                 (peer_id, host_id)
             };
 
-            client.state = GodotClientState::InRoom { app_id: app_id.to_string(), room_id: room_id.to_string() };
+            client.state = ClientState::InRoom { app_id, room_id };
 
             self.send_packet(
                 target_id,
@@ -438,37 +373,30 @@ impl RelayServer {
             return;
         }
 
-        self.send_packet(
-            target_id,
-            &Packet::Error {
-                error_code: 401,
-                error_message: "Room host denied entry".into(),
-            },
-            TransferChannel::Reliable,
-        ).await;
+        self.send_err(target_id, "Room host denied entry").await;
     }
 
     /// -----------------
     /// Game Data Routing
     /// -----------------
 
-    async fn route_game_data(&mut self, sender_id: u64, client_app_id: &str, client_room_id: &str, target_peer: i32, data: &Vec<u8>, channel: &TransferChannel) {
+    async fn route_game_data(&mut self, sender_id: u64, client_app_id: u64, client_room_id: u64, target_peer: i32, data: &Vec<u8>, channel: &TransferChannel) {
         let Some(app) = self.apps.get_mut(client_app_id) else {
             warn!("{} has invalid app_id in index", sender_id);
             return;
         };
 
-        let Some(room) = app.get_room(client_room_id) else {
+        let Some(room) = app.rooms.get(client_room_id) else {
             warn!("{} has invalid room_id in index", sender_id);
             return;
         };
 
-        let Some(sender_godot_id) = room.get_godot_id(sender_id) else {
+        let Some(sender_godot_id) = room.client_to_gd(sender_id) else {
             warn!("{} not found in their own room", sender_id);
             return;
         };
 
-        let Some(target_renet_id) = room.get_renet_id(target_peer) else {
+        let Some(target_renet_id) = room.gd_to_client(target_peer) else {
             return;
         };
 
@@ -487,43 +415,40 @@ impl RelayServer {
     /// -------------------
 
     async fn handle_disconnect(&mut self, client_id: u64) {
-        let Some(client) = self.clients.remove(&client_id) else {
+        let Some(client) = self.clients.remove(client_id) else {
             warn!("unregistered client disconnected");
             return;
         };
 
         match client.state {
-            GodotClientState::InRoom { app_id, room_id } => {
-                self.handle_room_disconnect(client_id, &app_id, &room_id).await;
+            ClientState::InRoom { app_id, room_id } => {
+                self.handle_room_disconnect(client_id, app_id, room_id).await;
             }
             _ => {}
         }
     }
 
-    async fn handle_room_disconnect(&mut self, sender_id: u64, app_id: &str, room_id: &str) {
+    async fn handle_room_disconnect(&mut self, sender_id: u64, app_id: u64, room_id: u64) {
         let disconnect_info = {
             let Some(app) = self.apps.get_mut(app_id) else {
                 warn!("{} had invalid app_id on disconnect", sender_id);
                 return;
             };
 
-            let Some(room) = app.get_room(room_id) else {
+            let Some(room) = app.rooms.get(room_id) else {
                 warn!("{} had invalid room_id on disconnect", sender_id);
                 return;
             };
 
-            let godot_id = match room.get_godot_id(sender_id) {
-                Some(id) => id,
-                None => {
-                    warn!("{} not found in their room on disconnect", sender_id);
-                    return;
-                }
+            let Some(godot_id) = room.client_to_gd(sender_id) else {
+                warn!("{} not found in their room on disconnect", sender_id);
+                return;
             };
 
             DisconnectInfo {
                 is_host: room.get_host() == sender_id,
                 godot_id,
-                other_peers: room.get_renet_ids()
+                other_peers: room.get_clients()
                     .into_iter()
                     .filter(|&id| id != sender_id)
                     .collect(),
@@ -537,20 +462,20 @@ impl RelayServer {
         }
     }
 
-    async fn handle_host_disconnect(&mut self, app_id: &str, room_id: &str, peers_to_kick: Vec<u64>) {
+    async fn handle_host_disconnect(&mut self, app_id: u64, room_id: u64, peers_to_kick: Vec<u64>) {
         info!("host disconnected");
-        self.remove_room(&app_id, &room_id).await;
+        self.remove_room(app_id, room_id).await;
 
         for peer_id in peers_to_kick {
-            self.clients.remove(&peer_id);
+            self.clients.remove(peer_id);
             self.force_disconnect(peer_id).await;
         }
     }
 
-    async fn handle_peer_disconnect(&mut self, app_id: &str, room_id: &str, client_id: u64, peer_godot_id: i32, other_peers: Vec<u64>) {
+    async fn handle_peer_disconnect(&mut self, app_id: u64, room_id: u64, client_id: u64, peer_godot_id: i32, other_peers: Vec<u64>) {
         info!("peer disconnected");
         if let Some(app) = self.apps.get_mut(app_id) {
-            if let Some(room) = app.get_room(&room_id) {
+            if let Some(room) = app.rooms.get_mut(room_id) {
                 room.remove_peer(client_id);
             }
         }
@@ -575,6 +500,17 @@ impl RelayServer {
         }
     }
 
+    async fn send_err(&mut self, target_client: u64, err_msg: &str) {
+        self.send_packet(
+            target_client,
+            &Packet::Error {
+                error_code: 401,
+                error_message: err_msg.to_string(),
+            },
+            TransferChannel::Reliable,
+        ).await;
+    }
+
     async fn force_disconnect(&mut self, target_client: u64) {
         self.send_packet(
             target_client,
@@ -590,12 +526,12 @@ impl RelayServer {
 
     pub async fn cleanup(&mut self) {
         let mut disconnects: Vec<u64> = Vec::new();
-        let mut to_remove: Vec<(String, String)> = Vec::new();
+        let mut to_remove: Vec<(u64, u64)> = Vec::new();
 
-        for (app_id, app) in self.apps.iter_mut() {
-            for (room_id, room) in app.get_rooms() {
-                disconnects.extend(room.get_renet_ids().iter().copied());
-                to_remove.push((app_id.clone(), room_id.clone()));
+        for app in self.apps.iter() {
+            for room in app.rooms.iter() {
+                disconnects.extend(room.get_clients().iter().copied());
+                to_remove.push((app.id, room.id));
             }
         }
 
@@ -607,7 +543,7 @@ impl RelayServer {
         }
 
         for (app_id, room_id) in to_remove {
-            self.remove_room(&app_id, &room_id).await;
+            self.remove_room(app_id, room_id).await;
         }
     }
 }

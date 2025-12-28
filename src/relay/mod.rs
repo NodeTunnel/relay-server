@@ -1,7 +1,4 @@
-mod session;
-pub mod room;
-mod app;
+mod rooms;
+mod apps;
+mod clients;
 pub mod server;
-
-pub use app::*;
-pub use session::*;
