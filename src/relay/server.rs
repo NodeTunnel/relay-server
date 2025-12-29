@@ -1,13 +1,12 @@
 use std::error::Error;
 use std::time::Duration;
-use reqwest::{StatusCode};
 use tracing::{debug, info, warn};
 use crate::config::loader::Config;
-use crate::relay::rooms::{Room, RoomIds};
-use crate::protocol::packet::{Packet, RoomInfo};
+use crate::protocol::packet::Packet;
 use crate::relay::apps::Apps;
-use crate::relay::clients::{Client, ClientState, Clients};
+use crate::relay::clients::{ClientState, Clients};
 use crate::relay::handlers::auth::AuthHandler;
+use crate::relay::handlers::room::RoomHandler;
 use crate::udp::common::{TransferChannel, ServerEvent};
 use crate::udp::paper_interface::PaperInterface;
 
@@ -112,7 +111,6 @@ impl RelayServer {
     async fn handle_unauthenticated_packet(&mut self, from_client_id: u64, packet: &Packet) {
         match packet {
             Packet::Authenticate { app_id, version } => {
-                // self.authenticate_client(from_client_id, app_id, version).await,
                 AuthHandler::new(
                     &mut self.transport,
                     &self.http_client,
@@ -129,13 +127,19 @@ impl RelayServer {
     }
 
     async fn handle_authenticated_packet(&mut self, from_client_id: u64, client_app_id: u64, packet: &Packet) {
+        let mut rh = RoomHandler::new(
+            &mut self.transport,
+            &mut self.apps,
+            &mut self.clients,
+        );
+
         match packet {
             Packet::CreateRoom { is_public, metadata } =>
-                self.create_room(from_client_id, client_app_id, *is_public, metadata).await,
+                rh.create_room(from_client_id, client_app_id, *is_public, metadata).await,
             Packet::ReqJoin { room_id, metadata } =>
-                self.recv_join_req(from_client_id, client_app_id, room_id, metadata).await,
+                rh.recv_join_req(from_client_id, client_app_id, room_id, metadata).await,
             Packet::ReqRooms =>
-                self.send_rooms(from_client_id, client_app_id).await,
+                rh.send_rooms(from_client_id, client_app_id).await,
             _ => {
                 // TODO: should probably alert the client that they are in an unexpected state?
                 warn!("unexpected packet type from {} in authenticated state: {:?}.", from_client_id, packet)
@@ -144,11 +148,18 @@ impl RelayServer {
     }
 
     async fn handle_in_room_packet(&mut self, from_client_id: u64, client_app_id: u64, client_room_id: u64, packet: &Packet, channel: &TransferChannel) {
+        let mut rh = RoomHandler::new(
+            &mut self.transport,
+            &mut self.apps,
+            &mut self.clients,
+        );
+
         match packet {
-            Packet::UpdateRoom { room_id, metadata } =>
-                self.update_room(from_client_id, client_app_id, client_room_id, metadata).await,
+            Packet::UpdateRoom { room_id, metadata } => {
+                rh.update_room(from_client_id, client_app_id, client_room_id, metadata).await;
+            }
             Packet::JoinRes { target_id, room_id, allowed } =>
-                self.recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
+                rh.recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
             Packet::GameData { from_peer, data } =>
                 self.route_game_data(from_client_id, client_app_id, client_room_id, *from_peer, data, channel).await,
             _ => {
@@ -157,151 +168,6 @@ impl RelayServer {
             }
         }
     }
-
-    /// ---------------
-    /// Room Management
-    /// ---------------
-
-    async fn create_room(&mut self, sender_id: u64, app_id: u64, is_public: bool, metadata: &str) {
-        let Some(app) = self.apps.get_mut(app_id) else {
-            warn!("attempted to create a room for a missing app: {}", app_id);
-            return;
-        };
-
-        let Some(client) = self.clients.get_mut(sender_id) else {
-            warn!("attempted to create a room for a missing client: {}", sender_id);
-            return;
-        };
-
-        let room = app.rooms.create(sender_id, is_public, metadata.to_string());
-        let join_code = room.join_code.clone();
-        let peer_id = room.add_peer(sender_id);
-
-        client.state = ClientState::InRoom { app_id, room_id: room.id };
-
-        self.send_packet(
-            sender_id,
-            &Packet::ConnectedToRoom {
-                room_id: join_code,
-                peer_id,
-            },
-            TransferChannel::Reliable,
-        ).await;
-    }
-
-    async fn send_rooms(&mut self, target: u64, app_id: u64) {
-        let Some(app) = self.apps.get_mut(app_id) else {
-            warn!("attempted to list rooms for a missing app: {}", app_id);
-            return;
-        };
-
-        let public_rooms: Vec<RoomInfo> = app.rooms.iter_mut()
-            .filter(|room| room.is_public)
-            .map(|room| room.to_info())
-            .collect();
-
-        self.send_packet(
-            target,
-            &Packet::GetRooms {
-                rooms: public_rooms
-            },
-            TransferChannel::Reliable,
-        ).await;
-    }
-
-    async fn update_room(&mut self, sender_id: u64, app_id: u64, room_id: u64, metadata: &str) {
-        let app = self.apps.get_mut(app_id).expect("App exists");
-        let Some(room) = app.rooms.get_mut(room_id) else {
-            self.send_err(sender_id, "Room not found").await;
-            return;
-        };
-
-        room.metadata = metadata.to_string();
-    }
-
-    async fn remove_room(&mut self, app_id: u64, room_id: u64) {
-        if let Some(app) = self.apps.get_mut(app_id) {
-            app.rooms.remove(room_id);
-        }
-    }
-
-    /// ---------
-    /// Join Flow
-    /// ---------
-
-    async fn recv_join_req(&mut self, sender_id: u64, app_id: u64, room_id: &str, metadata: &str) {
-        let host_id = {
-            let Some(app) = self.apps.get_mut(app_id) else {
-                warn!("attempted to handle join request for a missing app: {}", app_id);
-                return;
-            };
-
-            let Some(room) = app.rooms.get_by_jc(room_id) else {
-                self.send_err(sender_id, "Room not found").await;
-                return;
-            };
-
-            room.get_host()
-        };
-
-        self.send_packet(
-            host_id,
-            &Packet::PeerJoinAttempt {
-                target_id: sender_id,
-                metadata: metadata.to_string()
-            },
-            TransferChannel::Reliable
-        ).await;
-    }
-
-    async fn recv_join_res(&mut self, app_id: u64, target_id: u64, room_id: u64, allowed: &bool) {
-        if *allowed {
-            let Some(client) = self.clients.get_mut(target_id) else {
-                warn!("attempted to handle join response for a missing client: {}", target_id);
-                return;
-            };
-
-            let (peer_id, host_id) = {
-                let app = self.apps.get_mut(app_id).expect("App exists");
-                let Some(room) = app.rooms.get_mut(room_id) else {
-                    self.send_err(target_id, "Room not found").await;
-                    return;
-                };
-
-                let peer_id = room.add_peer(target_id);
-                let host_id = room.get_host();
-
-                (peer_id, host_id)
-            };
-
-            client.state = ClientState::InRoom { app_id, room_id };
-
-            self.send_packet(
-                target_id,
-                &Packet::ConnectedToRoom {
-                    room_id: room_id.to_string(),
-                    peer_id,
-                },
-                TransferChannel::Reliable,
-            ).await;
-
-            self.send_packet(
-                host_id,
-                &Packet::PeerJoinedRoom {
-                    peer_id,
-                },
-                TransferChannel::Reliable
-            ).await;
-
-            return;
-        }
-
-        self.send_err(target_id, "Room host denied entry").await;
-    }
-
-    /// -----------------
-    /// Game Data Routing
-    /// -----------------
 
     async fn route_game_data(&mut self, sender_id: u64, client_app_id: u64, client_room_id: u64, target_peer: i32, data: &Vec<u8>, channel: &TransferChannel) {
         let Some(app) = self.apps.get_mut(client_app_id) else {
@@ -387,7 +253,11 @@ impl RelayServer {
 
     async fn handle_host_disconnect(&mut self, app_id: u64, room_id: u64, peers_to_kick: Vec<u64>) {
         info!("host disconnected");
-        self.remove_room(app_id, room_id).await;
+        RoomHandler::new(
+            &mut self.transport,
+            &mut self.apps,
+            &mut self.clients,
+        ).remove_room(app_id, room_id);
 
         for peer_id in peers_to_kick {
             self.clients.remove(peer_id);
@@ -466,7 +336,11 @@ impl RelayServer {
         }
 
         for (app_id, room_id) in to_remove {
-            self.remove_room(app_id, room_id).await;
+            RoomHandler::new(
+                &mut self.transport,
+                &mut self.apps,
+                &mut self.clients,
+            ).remove_room(app_id, room_id);
         }
     }
 }
