@@ -13,7 +13,7 @@ use crate::udp::common::{TransferChannel, ServerEvent};
 use crate::udp::paper_interface::PaperInterface;
 
 pub struct RelayServer {
-    transport: PaperInterface,
+    udp: PaperInterface,
     http_client: reqwest::Client,
 
     config: Config,
@@ -24,7 +24,7 @@ pub struct RelayServer {
 impl RelayServer {
     pub fn new(transport: PaperInterface, config: Config) -> Self {
         Self {
-            transport,
+            udp: transport,
             http_client: reqwest::Client::new(),
             config,
             apps: Apps::new(),
@@ -32,6 +32,7 @@ impl RelayServer {
         }
     }
 
+    /// Starts the server loop.
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         // TODO: remove magic numbers
         let mut cleanup = tokio::time::interval(Duration::from_secs(1));
@@ -43,7 +44,7 @@ impl RelayServer {
 
         loop {
             tokio::select! {
-                result = self.transport.recv_events() => {
+                result = self.udp.recv_events() => {
                     let events = result?;
                     for event in events {
                         self.handle_event(event).await;
@@ -52,19 +53,20 @@ impl RelayServer {
 
                 _ = cleanup.tick() => {
                     // TODO: remove magic numbers
-                    for client_id in self.transport.connection_manager.cleanup_sessions(Duration::from_secs(5)) {
+                    for client_id in self.udp.connection_manager.cleanup_sessions(Duration::from_secs(5)) {
                         self.handle_event(ServerEvent::ClientDisconnected { client_id }).await;
                     }
                 }
 
                 _ = resend.tick() => {
                     // TODO: remove magic numbers
-                    self.transport.do_resends(Duration::from_millis(100)).await;
+                    self.udp.do_resends(Duration::from_millis(100)).await;
                 }
             }
         }
     }
 
+    /// Handles an event from the UDP layer.
     async fn handle_event(&mut self, event: ServerEvent) {
         match event {
             ServerEvent::ClientConnected { client_id } => {
@@ -72,7 +74,7 @@ impl RelayServer {
             }
             ServerEvent::ClientDisconnected { client_id } => {
                 DisconnectHandler::new(
-                    &mut self.transport,
+                    &mut self.udp,
                     &mut self.clients,
                     &mut self.apps,
                 ).handle_disconnect(client_id).await;
@@ -84,6 +86,8 @@ impl RelayServer {
         }
     }
 
+    /// Handles a packet received from `PaperUDP`.
+    /// This checks the state of the client and routes packets based on the state.
     async fn handle_packet(&mut self, from_client_id: u64, data: Vec<u8>, channel: TransferChannel) {
         let Some(client) = self.clients.get(from_client_id) else {
             // This means that the client is not in the list of connected clients.
@@ -104,11 +108,12 @@ impl RelayServer {
         }
     }
 
+    /// Delegates packets to various handlers when the client has yet to authenticate.
     async fn handle_unauthenticated_packet(&mut self, from_client_id: u64, packet: &Packet) {
         match packet {
             Packet::Authenticate { app_id, version } => {
                 AuthHandler::new(
-                    &mut self.transport,
+                    &mut self.udp,
                     &self.http_client,
                     &mut self.clients,
                     &mut self.apps,
@@ -122,9 +127,10 @@ impl RelayServer {
         }
     }
 
+    /// Delegates packets to various handlers when the client is authenticated, but not in a room.
     async fn handle_authenticated_packet(&mut self, from_client_id: u64, client_app_id: u64, packet: &Packet) {
         let mut rh = RoomHandler::new(
-            &mut self.transport,
+            &mut self.udp,
             &mut self.apps,
             &mut self.clients,
         );
@@ -143,24 +149,25 @@ impl RelayServer {
         }
     }
 
+    /// Delegates packets to various handlers when the client is in a room.
     async fn handle_in_room_packet(&mut self, from_client_id: u64, client_app_id: u64, client_room_id: u64, packet: &Packet, channel: &TransferChannel) {
         match packet {
             Packet::UpdateRoom { metadata, room_id: _room_id } => {
                 RoomHandler::new(
-                    &mut self.transport,
+                    &mut self.udp,
                     &mut self.apps,
                     &mut self.clients,
                 ).update_room(from_client_id, client_app_id, client_room_id, metadata).await;
             }
             Packet::JoinRes { target_id, allowed, room_id: _room_id } =>
                 RoomHandler::new(
-                    &mut self.transport,
+                    &mut self.udp,
                     &mut self.apps,
                     &mut self.clients,
                 ).recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
             Packet::GameData { from_peer, data } => {
                 GameDataHandler::new(
-                    &mut self.transport,
+                    &mut self.udp,
                     &mut self.apps,
                 ).route_game_data(from_client_id, client_app_id, client_room_id, *from_peer, data, channel).await;
             }
@@ -171,6 +178,8 @@ impl RelayServer {
         }
     }
 
+    /// Forcefully disconnects all clients from the server.
+    /// Should be called when the server shuts down.
     pub async fn cleanup(&mut self) {
         let mut disconnects: Vec<u64> = Vec::new();
         let mut to_remove: Vec<(u64, u64)> = Vec::new();
@@ -185,7 +194,7 @@ impl RelayServer {
         info!("disconnecting {} peers", disconnects.len());
 
         let mut dh = DisconnectHandler::new(
-            &mut self.transport,
+            &mut self.udp,
             &mut self.clients,
             &mut self.apps
         );
@@ -195,7 +204,7 @@ impl RelayServer {
         }
 
         let mut rh = RoomHandler::new(
-            &mut self.transport,
+            &mut self.udp,
             &mut self.apps,
             &mut self.clients,
         );
