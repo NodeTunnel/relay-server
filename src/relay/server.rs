@@ -6,16 +6,11 @@ use crate::protocol::packet::Packet;
 use crate::relay::apps::Apps;
 use crate::relay::clients::{ClientState, Clients};
 use crate::relay::handlers::auth::AuthHandler;
+use crate::relay::handlers::disconnect::DisconnectHandler;
 use crate::relay::handlers::game_data::GameDataHandler;
 use crate::relay::handlers::room::RoomHandler;
 use crate::udp::common::{TransferChannel, ServerEvent};
 use crate::udp::paper_interface::PaperInterface;
-
-struct DisconnectInfo {
-    is_host: bool,
-    godot_id: i32,
-    other_peers: Vec<u64>,
-}
 
 pub struct RelayServer {
     transport: PaperInterface,
@@ -70,17 +65,17 @@ impl RelayServer {
         }
     }
 
-    /// --------------
-    /// Event Handling
-    /// --------------
-
     async fn handle_event(&mut self, event: ServerEvent) {
         match event {
             ServerEvent::ClientConnected { client_id } => {
                 self.clients.create(client_id);
             }
             ServerEvent::ClientDisconnected { client_id } => {
-                self.handle_disconnect(client_id).await;
+                DisconnectHandler::new(
+                    &mut self.transport,
+                    &mut self.clients,
+                    &mut self.apps,
+                ).handle_disconnect(client_id).await;
             }
             ServerEvent::PacketReceived { client_id, data, channel } => {
                 debug!("got packet: {:?}", data);
@@ -143,24 +138,26 @@ impl RelayServer {
                 rh.send_rooms(from_client_id, client_app_id).await,
             _ => {
                 // TODO: should probably alert the client that they are in an unexpected state?
-                warn!("unexpected packet type from {} in authenticated state: {:?}.", from_client_id, packet)
+                warn!("unexpected packet type from {} in authenticated state: {:?}.", from_client_id, packet);
             }
         }
     }
 
     async fn handle_in_room_packet(&mut self, from_client_id: u64, client_app_id: u64, client_room_id: u64, packet: &Packet, channel: &TransferChannel) {
-        let mut rh = RoomHandler::new(
-            &mut self.transport,
-            &mut self.apps,
-            &mut self.clients,
-        );
-
         match packet {
-            Packet::UpdateRoom { room_id, metadata } => {
-                rh.update_room(from_client_id, client_app_id, client_room_id, metadata).await;
+            Packet::UpdateRoom { metadata, room_id: _room_id } => {
+                RoomHandler::new(
+                    &mut self.transport,
+                    &mut self.apps,
+                    &mut self.clients,
+                ).update_room(from_client_id, client_app_id, client_room_id, metadata).await;
             }
-            Packet::JoinRes { target_id, room_id, allowed } =>
-                rh.recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
+            Packet::JoinRes { target_id, allowed, room_id: _room_id } =>
+                RoomHandler::new(
+                    &mut self.transport,
+                    &mut self.apps,
+                    &mut self.clients,
+                ).recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
             Packet::GameData { from_peer, data } => {
                 GameDataHandler::new(
                     &mut self.transport,
@@ -169,128 +166,10 @@ impl RelayServer {
             }
             _ => {
                 // TODO: should probably alert the client that they are in an unexpected state?
-                warn!("unexpected packet type from {} in room state: {:?}.", from_client_id, packet)
+                warn!("unexpected packet type from {} in room state: {:?}.", from_client_id, packet);
             }
         }
     }
-
-    /// -------------------
-    /// Disconnect Handling
-    /// -------------------
-
-    async fn handle_disconnect(&mut self, client_id: u64) {
-        let Some(client) = self.clients.remove(client_id) else {
-            warn!("unregistered client disconnected");
-            return;
-        };
-
-        match client.state {
-            ClientState::InRoom { app_id, room_id } => {
-                self.handle_room_disconnect(client_id, app_id, room_id).await;
-            }
-            _ => {}
-        }
-    }
-
-    async fn handle_room_disconnect(&mut self, sender_id: u64, app_id: u64, room_id: u64) {
-        let disconnect_info = {
-            let Some(app) = self.apps.get_mut(app_id) else {
-                warn!("{} had invalid app_id on disconnect", sender_id);
-                return;
-            };
-
-            let Some(room) = app.rooms.get(room_id) else {
-                warn!("{} had invalid room_id on disconnect", sender_id);
-                return;
-            };
-
-            let Some(godot_id) = room.client_to_gd(sender_id) else {
-                warn!("{} not found in their room on disconnect", sender_id);
-                return;
-            };
-
-            DisconnectInfo {
-                is_host: room.get_host() == sender_id,
-                godot_id,
-                other_peers: room.get_clients()
-                    .into_iter()
-                    .filter(|&id| id != sender_id)
-                    .collect(),
-            }
-        };
-
-        if disconnect_info.is_host {
-            self.handle_host_disconnect(app_id, room_id, disconnect_info.other_peers).await;
-        } else {
-            self.handle_peer_disconnect(app_id, room_id, sender_id, disconnect_info.godot_id, disconnect_info.other_peers).await;
-        }
-    }
-
-    async fn handle_host_disconnect(&mut self, app_id: u64, room_id: u64, peers_to_kick: Vec<u64>) {
-        info!("host disconnected");
-        RoomHandler::new(
-            &mut self.transport,
-            &mut self.apps,
-            &mut self.clients,
-        ).remove_room(app_id, room_id);
-
-        for peer_id in peers_to_kick {
-            self.clients.remove(peer_id);
-            self.force_disconnect(peer_id).await;
-        }
-    }
-
-    async fn handle_peer_disconnect(&mut self, app_id: u64, room_id: u64, client_id: u64, peer_godot_id: i32, other_peers: Vec<u64>) {
-        info!("peer disconnected");
-        if let Some(app) = self.apps.get_mut(app_id) {
-            if let Some(room) = app.rooms.get_mut(room_id) {
-                room.remove_peer(client_id);
-            }
-        }
-
-        for peer_id in other_peers {
-            self.send_packet(peer_id, &Packet::PeerLeftRoom { peer_id: peer_godot_id }, TransferChannel::Reliable).await;
-        }
-    }
-
-    /// --------------
-    /// Packet Helpers
-    /// --------------
-
-    async fn send_packet(&mut self, target_client: u64, packet: &Packet, channel: TransferChannel) {
-        match self.transport.send(
-            target_client,
-            packet.to_bytes(),
-            channel,
-        ).await {
-            Ok(_) => {},
-            Err(e) => warn!("failed to send packet: {}", e)
-        }
-    }
-
-    async fn send_err(&mut self, target_client: u64, err_msg: &str) {
-        self.send_packet(
-            target_client,
-            &Packet::Error {
-                error_code: 401,
-                error_message: err_msg.to_string(),
-            },
-            TransferChannel::Reliable,
-        ).await;
-    }
-
-    async fn force_disconnect(&mut self, target_client: u64) {
-        self.send_packet(
-            target_client,
-            &Packet::ForceDisconnect,
-            TransferChannel::Reliable
-        ).await;
-        self.transport.remove_client(&target_client);
-    }
-
-    /// ---------
-    /// Utilities
-    /// ---------
 
     pub async fn cleanup(&mut self) {
         let mut disconnects: Vec<u64> = Vec::new();
@@ -305,17 +184,24 @@ impl RelayServer {
 
         info!("disconnecting {} peers", disconnects.len());
 
+        let mut dh = DisconnectHandler::new(
+            &mut self.transport,
+            &mut self.clients,
+            &mut self.apps
+        );
+
         for id in disconnects {
-            self.send_packet(id, &Packet::ForceDisconnect, TransferChannel::Reliable)
-                .await;
+            dh.force_disconnect(id).await;
         }
 
+        let mut rh = RoomHandler::new(
+            &mut self.transport,
+            &mut self.apps,
+            &mut self.clients,
+        );
+
         for (app_id, room_id) in to_remove {
-            RoomHandler::new(
-                &mut self.transport,
-                &mut self.apps,
-                &mut self.clients,
-            ).remove_room(app_id, room_id);
+            rh.remove_room(app_id, room_id);
         }
     }
 }
