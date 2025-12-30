@@ -6,6 +6,7 @@ use crate::protocol::packet::Packet;
 use crate::relay::apps::Apps;
 use crate::relay::clients::{ClientState, Clients};
 use crate::relay::handlers::auth::AuthHandler;
+use crate::relay::handlers::game_data::GameDataHandler;
 use crate::relay::handlers::room::RoomHandler;
 use crate::udp::common::{TransferChannel, ServerEvent};
 use crate::udp::paper_interface::PaperInterface;
@@ -121,7 +122,7 @@ impl RelayServer {
             }
             _ => {
                 // TODO: should probably alert the client that they need to authenticate first!
-                warn!("unexpected packet type from {} in un-authenticated state: {:?}.", from_client_id, packet)
+                warn!("unexpected packet type from {} in un-authenticated state: {:?}.", from_client_id, packet);
             }
         }
     }
@@ -160,43 +161,17 @@ impl RelayServer {
             }
             Packet::JoinRes { target_id, room_id, allowed } =>
                 rh.recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
-            Packet::GameData { from_peer, data } =>
-                self.route_game_data(from_client_id, client_app_id, client_room_id, *from_peer, data, channel).await,
+            Packet::GameData { from_peer, data } => {
+                GameDataHandler::new(
+                    &mut self.transport,
+                    &mut self.apps,
+                ).route_game_data(from_client_id, client_app_id, client_room_id, *from_peer, data, channel).await;
+            }
             _ => {
                 // TODO: should probably alert the client that they are in an unexpected state?
                 warn!("unexpected packet type from {} in room state: {:?}.", from_client_id, packet)
             }
         }
-    }
-
-    async fn route_game_data(&mut self, sender_id: u64, client_app_id: u64, client_room_id: u64, target_peer: i32, data: &Vec<u8>, channel: &TransferChannel) {
-        let Some(app) = self.apps.get_mut(client_app_id) else {
-            warn!("{} has invalid app_id in index", sender_id);
-            return;
-        };
-
-        let Some(room) = app.rooms.get(client_room_id) else {
-            warn!("{} has invalid room_id in index", sender_id);
-            return;
-        };
-
-        let Some(sender_godot_id) = room.client_to_gd(sender_id) else {
-            warn!("{} not found in their own room", sender_id);
-            return;
-        };
-
-        let Some(target_renet_id) = room.gd_to_client(target_peer) else {
-            return;
-        };
-
-        self.send_packet(
-            target_renet_id,
-            &Packet::GameData {
-                from_peer: sender_godot_id,
-                data: data.clone(),
-            },
-            *channel,
-        ).await;
     }
 
     /// -------------------
