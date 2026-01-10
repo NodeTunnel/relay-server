@@ -44,14 +44,6 @@ impl Apps {
         self.by_id.values()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut App> {
-        self.by_id.values_mut()
-    }
-
-    pub fn get(&self, id: u64) -> Option<&App> {
-        self.by_id.get(&id)
-    }
-
     pub fn get_mut(&mut self, id: u64) -> Option<&mut App> {
         self.by_id.get_mut(&id)
     }
@@ -59,10 +51,5 @@ impl Apps {
     pub fn get_by_token(&self, token: &str) -> Option<&App> {
         let id = self.token_to_id.get(token)?;
         self.by_id.get(id)
-    }
-
-    pub fn get_by_token_mut(&mut self, token: &str) -> Option<&mut App> {
-        let id = self.token_to_id.get(token)?;
-        self.by_id.get_mut(id)
     }
 }

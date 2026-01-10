@@ -16,7 +16,6 @@ pub struct DisconnectHandler<'a> {
     udp: &'a mut PaperInterface,
     clients: &'a mut Clients,
     apps: &'a mut Apps,
-
 }
 
 impl<'a> DisconnectHandler<'a> {
@@ -38,11 +37,8 @@ impl<'a> DisconnectHandler<'a> {
             return;
         };
 
-        match client.state {
-            ClientState::InRoom { app_id, room_id } => {
-                self.handle_room_disconnect(client_id, app_id, room_id).await;
-            }
-            _ => {}
+        if let ClientState::InRoom { app_id, room_id } = client.state {
+            self.handle_room_disconnect(client_id, app_id, room_id).await;
         }
     }
 
@@ -83,9 +79,9 @@ impl<'a> DisconnectHandler<'a> {
     async fn handle_host_disconnect(&mut self, app_id: u64, room_id: u64, peers_to_kick: Vec<u64>) {
         info!("host disconnected");
         RoomHandler::new(
-            &mut self.udp,
-            &mut self.apps,
-            &mut self.clients,
+            self.udp,
+            self.apps,
+            self.clients,
         ).remove_room(app_id, room_id);
 
         for peer_id in peers_to_kick {
@@ -122,7 +118,7 @@ impl<'a> DisconnectHandler<'a> {
             packet.to_bytes(),
             channel,
         ).await {
-            Ok(_) => {},
+            Ok(()) => {},
             Err(e) => warn!("failed to send packet: {}", e)
         }
     }

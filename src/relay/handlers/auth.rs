@@ -43,7 +43,7 @@ impl<'a> AuthHandler<'a> {
         }
 
         // Check app whitelist
-        if !self.is_app_allowed(app_token).await {
+        if !self.app_allowed(app_token).await {
             // TODO: send error
             return;
         }
@@ -67,7 +67,7 @@ impl<'a> AuthHandler<'a> {
         versions.contains(&version.to_string())
     }
 
-    async fn is_app_allowed(&mut self, app: &str) -> bool {
+    async fn app_allowed(&mut self, app: &str) -> bool {
         let remote = &self.config.remote_whitelist_endpoint;
         let token = &self.config.remote_whitelist_token;
 
@@ -100,7 +100,7 @@ impl<'a> AuthHandler<'a> {
         app: &str,
         relay_token: &str,
     ) -> Result<bool, Box<dyn Error>> {
-        let url = format!("{}/{}", endpoint, app);
+        let url = format!("{endpoint}/{app}");
 
         let res = self.http
             .get(&url)
@@ -111,7 +111,7 @@ impl<'a> AuthHandler<'a> {
         match res.status() {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
-            s => Err(format!("unexpected status from endpoint: {}", s).into()),
+            s => Err(format!("unexpected status from endpoint: {s}").into()),
         }
     }
 

@@ -20,7 +20,7 @@ impl<'a> GameDataHandler<'a> {
         }
     }
 
-    pub async fn route_game_data(&mut self, sender_id: u64, client_app_id: u64, client_room_id: u64, target_peer: i32, data: &Vec<u8>, channel: &TransferChannel) {
+    pub async fn route_game_data(&mut self, sender_id: u64, client_app_id: u64, client_room_id: u64, target_peer: i32, data: &[u8], channel: &TransferChannel) {
         let Some(app) = self.apps.get_mut(client_app_id) else {
             warn!("{} has invalid app_id in index", sender_id);
             return;
@@ -44,12 +44,13 @@ impl<'a> GameDataHandler<'a> {
             target_renet_id,
             &Packet::GameData {
                 from_peer: sender_godot_id,
-                data: data.clone(),
+                data: data.to_vec(),
             },
             *channel,
         ).await;
     }
 
+    // TODO: get rid of duplicates
     async fn send_packet(&mut self, target: u64, packet: &Packet, channel: TransferChannel) {
         if let Err(e) = self.udp.send(target, packet.to_bytes(), channel).await {
             warn!("failed to send packet: {}", e);
