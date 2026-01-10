@@ -38,7 +38,14 @@ impl PaperInterface {
                         if len == 0 { continue; }
 
                         let (session_id, session_addr, res) = {
-                            let session = self.connection_manager.get_or_create(addr);
+                            let (session, is_new) = self.connection_manager.get_or_create(addr);
+
+                            if is_new {
+                                self.pending_events.push(ServerEvent::ClientConnected {
+                                    client_id: session.id
+                                })
+                            }
+
                             session.last_heard_from = Instant::now();
                             let res = session.channel.decode(&buf[..len]);
                             (session.id, session.addr, res)

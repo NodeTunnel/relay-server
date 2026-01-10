@@ -25,12 +25,17 @@ impl ConnectionManager {
         }
     }
 
-    pub fn get_or_create(&mut self, addr: SocketAddr) -> &mut ClientSession {
+    /// Returns a ClientSession and a bool.
+    /// If the session already existed, the bool will be false.
+    /// If it had to be created, it will return true.
+    pub fn get_or_create(&mut self, addr: SocketAddr) -> (&mut ClientSession, bool) {
         if let Some(id) = self.addr_to_id.get(&addr) {
-            return self.id_to_session.get_mut(id).expect("session exists in both maps");
+            // TODO: get rid of expect
+            let s = self.id_to_session.get_mut(id).expect("session exists in both maps");
+            return (s, false);
         }
 
-        self.create_session(addr)
+        (self.create_session(addr), true)
     }
 
     pub fn create_session(&mut self, addr: SocketAddr) -> &mut ClientSession {
