@@ -26,12 +26,24 @@ pub struct Config {
 
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {
     let config_path = PathBuf::from(path);
+
     if config_path.exists() {
         let config_str = fs::read_to_string(path)?;
         return Ok(toml::from_str(&config_str)?);
     }
 
-    Err(ConfigError::NotFound(path.to_string()))
+    // Fallback to environment variables
+    match envy::from_env::<Config>() {
+        Ok(cfg) => Ok(cfg),
+        Err(_) => Ok(Config {
+            udp_bind_address: defaults::udp_bind_address(),
+            whitelist: defaults::whitelist(),
+            allowed_versions: defaults::allowed_versions(),
+            remote_whitelist_endpoint: defaults::empty_string(),
+            remote_whitelist_token: defaults::empty_string(),
+            relay_id: defaults::empty_string(),
+        }),
+    }
 }
 
 mod defaults {

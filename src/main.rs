@@ -26,6 +26,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
+    dotenvy::dotenv().ok();
     let config = config::loader::load_config("config.toml")?;
     let addr: SocketAddr = config.udp_bind_address
         .to_socket_addrs()?

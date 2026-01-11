@@ -1,4 +1,4 @@
-FROM rust:latest as builder
+FROM rust:1.75-bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN cargo build --release
@@ -6,8 +6,7 @@ RUN cargo build --release
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/relay-server /usr/local/bin/app
-COPY config.toml /config.toml
 WORKDIR /
 EXPOSE 8080/udp
 EXPOSE 8081/tcp
-CMD ["app"]
+ENTRYPOINT ["/usr/local/bin/app"]
