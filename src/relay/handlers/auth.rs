@@ -44,7 +44,9 @@ impl<'a> AuthHandler<'a> {
 
         // Check app whitelist
         if !self.app_allowed(app_token).await {
-            // TODO: send error
+            let msg = format!("App token {app_token} is not allowed.");
+            self.send_err(sender_id, &msg).await;
+            self.force_disconnect(sender_id).await;
             return;
         }
 
