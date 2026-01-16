@@ -119,7 +119,7 @@ impl<'a> RoomHandler<'a> {
                 return;
             };
 
-            let (peer_id, host_id) = {
+            let (peer_id, host_id, join_code) = {
                 let app = self.apps.get_mut(app_id).expect("App exists");
                 let Some(room) = app.rooms.get_mut(room_id) else {
                     self.send_err(target_id, "Room not found").await;
@@ -129,7 +129,7 @@ impl<'a> RoomHandler<'a> {
                 let peer_id = room.add_peer(target_id);
                 let host_id = room.get_host();
 
-                (peer_id, host_id)
+                (peer_id, host_id, room.join_code.clone())
             };
 
             client.state = ClientState::InRoom { app_id, room_id };
@@ -137,7 +137,7 @@ impl<'a> RoomHandler<'a> {
             self.send_packet(
                 target_id,
                 &Packet::ConnectedToRoom {
-                    room_id: room_id.to_string(),
+                    room_id: join_code,
                     peer_id,
                 },
                 TransferChannel::Reliable,
