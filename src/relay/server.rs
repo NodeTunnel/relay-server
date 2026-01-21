@@ -1,6 +1,3 @@
-use std::error::Error;
-use std::time::Duration;
-use tracing::{debug, info, warn};
 use crate::config::loader::Config;
 use crate::protocol::packet::Packet;
 use crate::relay::apps::Apps;
@@ -9,8 +6,11 @@ use crate::relay::handlers::auth::AuthHandler;
 use crate::relay::handlers::disconnect::DisconnectHandler;
 use crate::relay::handlers::game_data::GameDataHandler;
 use crate::relay::handlers::room::RoomHandler;
-use crate::udp::common::{TransferChannel, ServerEvent};
+use crate::udp::common::{ServerEvent, TransferChannel};
 use crate::udp::paper_interface::PaperInterface;
+use std::error::Error;
+use std::time::Duration;
+use tracing::{debug, info, trace, warn};
 
 pub struct RelayServer {
     udp: PaperInterface,
@@ -37,7 +37,7 @@ impl RelayServer {
         // TODO: remove magic numbers
         let mut cleanup = tokio::time::interval(Duration::from_secs(1));
         // TODO: remove magic numbers
-        let mut resend  = tokio::time::interval(Duration::from_millis(50));
+        let mut resend = tokio::time::interval(Duration::from_millis(50));
 
         cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -70,17 +70,26 @@ impl RelayServer {
     async fn handle_event(&mut self, event: ServerEvent) {
         match event {
             ServerEvent::ClientConnected { client_id } => {
+                info!("client connected: {}", client_id);
                 self.clients.create(client_id);
             }
             ServerEvent::ClientDisconnected { client_id } => {
-                DisconnectHandler::new(
-                    &mut self.udp,
-                    &mut self.clients,
-                    &mut self.apps,
-                ).handle_disconnect(client_id).await;
+                info!("client disconnected: {}", client_id);
+                DisconnectHandler::new(&mut self.udp, &mut self.clients, &mut self.apps)
+                    .handle_disconnect(client_id)
+                    .await;
             }
-            ServerEvent::PacketReceived { client_id, data, channel } => {
-                debug!("got packet: {:?}", data);
+            ServerEvent::PacketReceived {
+                client_id,
+                data,
+                channel,
+            } => {
+                trace!(
+                    "received packet from client {}: {} bytes via {:?}",
+                    client_id,
+                    data.len(),
+                    channel
+                );
                 self.handle_packet(client_id, data, channel).await;
             }
         }
@@ -88,7 +97,12 @@ impl RelayServer {
 
     /// Handles a packet received from `PaperUDP`.
     /// This checks the state of the client and routes packets based on the state.
-    async fn handle_packet(&mut self, from_client_id: u64, data: Vec<u8>, channel: TransferChannel) {
+    async fn handle_packet(
+        &mut self,
+        from_client_id: u64,
+        data: Vec<u8>,
+        channel: TransferChannel,
+    ) {
         let Some(client) = self.clients.get(from_client_id) else {
             // This means that the client is not in the list of connected clients.
             // Likely a bug in the client or a malicious client.
@@ -102,9 +116,18 @@ impl RelayServer {
         };
 
         match client.state {
-            ClientState::Connected => self.handle_unauthenticated_packet(from_client_id, &packet).await,
-            ClientState::Authenticated { app_id } => self.handle_authenticated_packet(from_client_id, app_id, &packet).await,
-            ClientState::InRoom { app_id, room_id } => self.handle_in_room_packet(from_client_id, app_id, room_id, &packet, &channel).await
+            ClientState::Connected => {
+                self.handle_unauthenticated_packet(from_client_id, &packet)
+                    .await
+            }
+            ClientState::Authenticated { app_id } => {
+                self.handle_authenticated_packet(from_client_id, app_id, &packet)
+                    .await
+            }
+            ClientState::InRoom { app_id, room_id } => {
+                self.handle_in_room_packet(from_client_id, app_id, room_id, &packet, &channel)
+                    .await
+            }
         }
     }
 
@@ -112,68 +135,133 @@ impl RelayServer {
     async fn handle_unauthenticated_packet(&mut self, from_client_id: u64, packet: &Packet) {
         match packet {
             Packet::Authenticate { app_id, version } => {
+                debug!(
+                    "client {} attempting authentication with app_id: {}, version: {}",
+                    from_client_id, app_id, version
+                );
                 AuthHandler::new(
                     &mut self.udp,
                     &self.http_client,
                     &mut self.clients,
                     &mut self.apps,
-                    &self.config
-                ).authenticate_client(from_client_id, app_id, version).await;
+                    &self.config,
+                )
+                .authenticate_client(from_client_id, app_id, version)
+                .await;
             }
             _ => {
                 // TODO: should probably alert the client that they need to authenticate first!
-                warn!("unexpected packet type from {} in un-authenticated state: {:?}.", from_client_id, packet);
+                warn!(
+                    "unexpected packet type from {} in un-authenticated state: {:?}.",
+                    from_client_id, packet
+                );
             }
         }
     }
 
     /// Delegates packets to various handlers when the client is authenticated, but not in a room.
-    async fn handle_authenticated_packet(&mut self, from_client_id: u64, client_app_id: u64, packet: &Packet) {
-        let mut rh = RoomHandler::new(
-            &mut self.udp,
-            &mut self.apps,
-            &mut self.clients,
-        );
+    async fn handle_authenticated_packet(
+        &mut self,
+        from_client_id: u64,
+        client_app_id: u64,
+        packet: &Packet,
+    ) {
+        let mut rh = RoomHandler::new(&mut self.udp, &mut self.apps, &mut self.clients);
 
         match packet {
-            Packet::CreateRoom { is_public, metadata } =>
-                rh.create_room(from_client_id, client_app_id, *is_public, metadata).await,
-            Packet::ReqJoin { room_id, metadata } =>
-                rh.recv_join_req(from_client_id, client_app_id, room_id, metadata).await,
-            Packet::ReqRooms =>
-                rh.send_rooms(from_client_id, client_app_id).await,
+            Packet::CreateRoom {
+                is_public,
+                metadata,
+            } => {
+                debug!(
+                    "client {} creating room (public: {}, metadata: {})",
+                    from_client_id, is_public, metadata
+                );
+                rh.create_room(from_client_id, client_app_id, *is_public, metadata)
+                    .await;
+            }
+            Packet::ReqJoin { room_id, metadata } => {
+                debug!(
+                    "client {} requesting to join room {} with metadata: {}",
+                    from_client_id, room_id, metadata
+                );
+                rh.recv_join_req(from_client_id, client_app_id, room_id, metadata)
+                    .await;
+            }
+            Packet::ReqRooms => {
+                debug!("client {} requesting room list", from_client_id);
+                rh.send_rooms(from_client_id, client_app_id).await;
+            }
             _ => {
                 // TODO: should probably alert the client that they are in an unexpected state?
-                warn!("unexpected packet type from {} in authenticated state: {:?}.", from_client_id, packet);
+                warn!(
+                    "unexpected packet type from {} in authenticated state: {:?}.",
+                    from_client_id, packet
+                );
             }
         }
     }
 
     /// Delegates packets to various handlers when the client is in a room.
-    async fn handle_in_room_packet(&mut self, from_client_id: u64, client_app_id: u64, client_room_id: u64, packet: &Packet, channel: &TransferChannel) {
+    async fn handle_in_room_packet(
+        &mut self,
+        from_client_id: u64,
+        client_app_id: u64,
+        client_room_id: u64,
+        packet: &Packet,
+        channel: &TransferChannel,
+    ) {
         match packet {
-            Packet::UpdateRoom { metadata, room_id: _room_id } => {
-                RoomHandler::new(
-                    &mut self.udp,
-                    &mut self.apps,
-                    &mut self.clients,
-                ).update_room(from_client_id, client_app_id, client_room_id, metadata).await;
+            Packet::UpdateRoom {
+                metadata,
+                room_id: _room_id,
+            } => {
+                debug!(
+                    "client {} updating room {} with metadata: {}",
+                    from_client_id, client_room_id, metadata
+                );
+                RoomHandler::new(&mut self.udp, &mut self.apps, &mut self.clients)
+                    .update_room(from_client_id, client_app_id, client_room_id, metadata)
+                    .await;
             }
-            Packet::JoinRes { target_id, allowed, room_id: _room_id } =>
-                RoomHandler::new(
-                    &mut self.udp,
-                    &mut self.apps,
-                    &mut self.clients,
-                ).recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
+            Packet::JoinRes {
+                target_id,
+                allowed,
+                room_id: _room_id,
+            } => {
+                debug!(
+                    "client {} responding to join request for target {} (allowed: {})",
+                    from_client_id, target_id, allowed
+                );
+                RoomHandler::new(&mut self.udp, &mut self.apps, &mut self.clients)
+                    .recv_join_res(client_app_id, *target_id, client_room_id, allowed)
+                    .await;
+            }
             Packet::GameData { from_peer, data } => {
-                GameDataHandler::new(
-                    &mut self.udp,
-                    &mut self.apps,
-                ).route_game_data(from_client_id, client_app_id, client_room_id, *from_peer, data, channel).await;
+                debug!(
+                    "routing game data from client {} (peer {}) to peer {}: {} bytes",
+                    from_client_id,
+                    from_peer,
+                    from_peer,
+                    data.len()
+                );
+                GameDataHandler::new(&mut self.udp, &mut self.apps)
+                    .route_game_data(
+                        from_client_id,
+                        client_app_id,
+                        client_room_id,
+                        *from_peer,
+                        data,
+                        channel,
+                    )
+                    .await;
             }
             _ => {
                 // TODO: should probably alert the client that they are in an unexpected state?
-                warn!("unexpected packet type from {} in room state: {:?}.", from_client_id, packet);
+                warn!(
+                    "unexpected packet type from {} in room state: {:?}.",
+                    from_client_id, packet
+                );
             }
         }
     }
@@ -193,21 +281,13 @@ impl RelayServer {
 
         info!("disconnecting {} peers", disconnects.len());
 
-        let mut dh = DisconnectHandler::new(
-            &mut self.udp,
-            &mut self.clients,
-            &mut self.apps
-        );
+        let mut dh = DisconnectHandler::new(&mut self.udp, &mut self.clients, &mut self.apps);
 
         for id in disconnects {
             dh.force_disconnect(id).await;
         }
 
-        let mut rh = RoomHandler::new(
-            &mut self.udp,
-            &mut self.apps,
-            &mut self.clients,
-        );
+        let mut rh = RoomHandler::new(&mut self.udp, &mut self.apps, &mut self.clients);
 
         for (app_id, room_id) in to_remove {
             rh.remove_room(app_id, room_id);
