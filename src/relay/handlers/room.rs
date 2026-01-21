@@ -1,4 +1,4 @@
-use tracing::warn;
+use tracing::{info, warn};
 use crate::protocol::packet::{Packet, RoomInfo};
 use crate::relay::apps::Apps;
 use crate::relay::clients::{ClientState, Clients};
@@ -37,9 +37,12 @@ impl<'a> RoomHandler<'a> {
 
         let room = app.rooms.create(sender_id, is_public, metadata.to_string());
         let join_code = room.join_code.clone();
+        let room_id = room.id;
         let peer_id = room.add_peer(sender_id);
 
-        client.state = ClientState::InRoom { app_id, room_id: room.id };
+        info!("client {} created room {} (join_code: {}, public: {}, peer_id: {})", sender_id, room_id, join_code, is_public, peer_id);
+
+        client.state = ClientState::InRoom { app_id, room_id };
 
         self.send_packet(
             sender_id,
