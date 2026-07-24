@@ -27,7 +27,7 @@ docker compose up -d --build
 ```bash
 cp .env.example .env
 ```
-Then edit the `.env` as required (this is where you chnage the port)
+Then edit the `.env` as required. Once you have an app ID you should add it to the `WHITELIST`. (this is also where you chnage the port).
 
 ---
 
