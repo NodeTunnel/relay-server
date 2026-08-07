@@ -21,11 +21,19 @@ pub struct RelayServer {
     clients: Clients,
 }
 
+// The relay waits for this check, so a slow server would freeze every game.
+const WHITELIST_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
+
 impl RelayServer {
     pub fn new(transport: PaperInterface, config: Config) -> Self {
         Self {
             udp: transport,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(WHITELIST_REQUEST_TIMEOUT)
+                .build()
+                .expect("failed to build the HTTP client"),
             config,
             apps: Apps::new(),
             clients: Clients::new(),
@@ -34,8 +42,7 @@ impl RelayServer {
 
     /// Starts the server loop.
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        // TODO: remove magic numbers
-        let mut cleanup = tokio::time::interval(Duration::from_secs(1));
+        let mut cleanup = tokio::time::interval(CLEANUP_INTERVAL);
         // TODO: remove magic numbers
         let mut resend  = tokio::time::interval(Duration::from_millis(50));
 
@@ -52,8 +59,8 @@ impl RelayServer {
                 }
 
                 _ = cleanup.tick() => {
-                    // TODO: remove magic numbers
-                    for client_id in self.udp.connection_manager.cleanup_sessions(Duration::from_secs(5)) {
+                    let session_timeout = Duration::from_secs(self.config.session_timeout_secs);
+                    for client_id in self.udp.connection_manager.cleanup_sessions(session_timeout) {
                         self.handle_event(ServerEvent::ClientDisconnected { client_id }).await;
                     }
                 }
@@ -96,7 +103,7 @@ impl RelayServer {
             return;
         };
 
-        let Ok(packet) = Packet::from_bytes(&data) else {
+        let Ok(packet) = Packet::from_client_bytes(&data) else {
             warn!("received an invalid packet from {}", from_client_id);
             return;
         };
@@ -164,7 +171,7 @@ impl RelayServer {
                     &mut self.udp,
                     &mut self.apps,
                     &mut self.clients,
-                ).recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
+                ).recv_join_res(from_client_id, client_app_id, *target_id, client_room_id, allowed).await,
             Packet::GameData { from_peer, data } => {
                 GameDataHandler::new(
                     &mut self.udp,

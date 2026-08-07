@@ -1,7 +1,8 @@
-use std::fs;
-use serde::Deserialize;
-use std::path::PathBuf;
 use crate::config::error::ConfigError;
+use crate::protocol::version::PROTOCOL_VERSION;
+use serde::Deserialize;
+use std::fs;
+use std::path::PathBuf;
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
@@ -22,33 +23,57 @@ pub struct Config {
 
     #[serde(default = "defaults::empty_string")]
     pub relay_id: String,
+
+    #[serde(default = "defaults::session_timeout_secs")]
+    pub session_timeout_secs: u64,
 }
 
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {
     let config_path = PathBuf::from(path);
 
-    if config_path.exists() {
+    let config = if config_path.exists() {
         let config_str = fs::read_to_string(path)?;
-        return Ok(toml::from_str(&config_str)?);
+        toml::from_str(&config_str)?
+    } else {
+        envy::from_env::<Config>()?
+    };
+
+    validate(&config)?;
+
+    Ok(config)
+}
+
+fn validate(config: &Config) -> Result<(), ConfigError> {
+    if config.allowed_versions.is_empty() {
+        return Err(ConfigError::Invalid(
+            "allowed_versions is empty, which rejects every client".to_string(),
+        ));
     }
 
-    // Fallback to environment variables
-    match envy::from_env::<Config>() {
-        Ok(cfg) => Ok(cfg),
-        Err(_) => Ok(Config {
-            udp_bind_address: defaults::udp_bind_address(),
-            whitelist: defaults::whitelist(),
-            allowed_versions: defaults::allowed_versions(),
-            remote_whitelist_endpoint: defaults::empty_string(),
-            remote_whitelist_token: defaults::empty_string(),
-            relay_id: defaults::empty_string(),
-        }),
+    if config.session_timeout_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "session_timeout_secs is 0, which disconnects every client on the first cleanup tick"
+                .to_string(),
+        ));
     }
+
+    Ok(())
 }
 
 mod defaults {
-    pub fn udp_bind_address() -> String { "0.0.0.0:8080".to_string() }
-    pub fn whitelist() -> Vec<String> { vec![] }
-    pub fn allowed_versions() -> Vec<String> { vec![] }
-    pub fn empty_string() -> String { "".to_string() }
+    pub fn udp_bind_address() -> String {
+        "0.0.0.0:8080".to_string()
+    }
+    pub fn whitelist() -> Vec<String> {
+        vec![]
+    }
+    pub fn allowed_versions() -> Vec<String> {
+        vec![super::PROTOCOL_VERSION.to_string()]
+    }
+    pub fn empty_string() -> String {
+        String::new()
+    }
+    pub fn session_timeout_secs() -> u64 {
+        5
+    }
 }

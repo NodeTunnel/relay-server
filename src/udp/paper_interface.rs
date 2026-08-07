@@ -3,10 +3,13 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use paperudp::channel::DecodeResult;
 use paperudp::packet::PacketType;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 use crate::udp::error::UdpError;
 use crate::udp::sessions::ConnectionManager;
 use super::common::{ServerEvent, TransferChannel};
+
+// A packet too big to send would sit in the resend buffer and retry forever.
+const MAX_RELIABLE_SEND_BYTES: usize = 16 * 1024;
 
 pub struct PaperInterface {
     pub(crate) socket: UdpSocket,
@@ -38,7 +41,9 @@ impl PaperInterface {
                         if len == 0 { continue; }
 
                         let (session_id, session_addr, res) = {
-                            let (session, is_new) = self.connection_manager.get_or_create(addr);
+                            let Some((session, is_new)) = self.connection_manager.get_or_create(addr) else {
+                                continue;
+                            };
 
                             if is_new {
                                 self.pending_events.push(ServerEvent::ClientConnected {
@@ -48,6 +53,7 @@ impl PaperInterface {
 
                             session.last_heard_from = Instant::now();
                             let res = session.channel.decode(&buf[..len]);
+
                             (session.id, session.addr, res)
                         };
 
@@ -104,6 +110,17 @@ impl PaperInterface {
     }
 
     pub async fn send(&mut self, target: u64, data: Vec<u8>, channel: TransferChannel) -> Result<(), std::io::Error> {
+        if matches!(channel, TransferChannel::Reliable) && data.len() > MAX_RELIABLE_SEND_BYTES {
+            error!(
+                "refusing to send {} byte reliable packet to {} (max {})",
+                data.len(), target, MAX_RELIABLE_SEND_BYTES
+            );
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "packet exceeds maximum send size",
+            ));
+        }
+
         if let Some(session) = self.connection_manager.get_by_id(&target) {
             match channel {
                 TransferChannel::Reliable => {

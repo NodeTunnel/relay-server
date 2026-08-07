@@ -55,4 +55,11 @@ impl Clients {
     pub fn get_mut(&mut self, id: u64) -> Option<&mut Client> {
         self.by_id.get_mut(&id)
     }
+
+    /// How many clients have logged in. Addresses that never did are not counted.
+    pub fn player_count(&self) -> usize {
+        self.by_id.values()
+            .filter(|client| !matches!(client.state, ClientState::Connected))
+            .count()
+    }
 }

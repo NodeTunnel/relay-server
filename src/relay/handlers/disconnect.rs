@@ -37,8 +37,23 @@ impl<'a> DisconnectHandler<'a> {
             return;
         };
 
-        if let ClientState::InRoom { app_id, room_id } = client.state {
-            self.handle_room_disconnect(client_id, app_id, room_id).await;
+        match client.state {
+            ClientState::Connected => {}
+            ClientState::Authenticated { app_id } => {
+                self.clear_pending_joins(app_id, client_id);
+            }
+            ClientState::InRoom { app_id, room_id } => {
+                self.clear_pending_joins(app_id, client_id);
+                self.handle_room_disconnect(client_id, app_id, room_id).await;
+            }
+        }
+    }
+
+    fn clear_pending_joins(&mut self, app_id: u64, client_id: u64) {
+        if let Some(app) = self.apps.get_mut(app_id) {
+            for room in app.rooms.iter_mut() {
+                room.clear_pending_join(client_id);
+            }
         }
     }
 

@@ -28,6 +28,25 @@ pub enum Packet {
 }
 
 impl Packet {
+    // GAME_DATA goes both ways. The rest only ever come from the server.
+    pub fn from_client_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        let Some(&packet_id) = bytes.first() else {
+            return Err(ProtocolError::EmptyPacket);
+        };
+
+        match packet_id {
+            AUTHENTICATE | CREATE_ROOM | JOIN_ROOM | GAME_DATA | REQ_ROOMS | UPDATE_ROOM
+            | JOIN_RES => Self::from_bytes(bytes),
+
+            CLIENT_AUTHENTICATED | CONNECTED_TO_ROOM | PEER_JOINED | PEER_LEFT
+            | FORCE_DISCONNECT | ERROR_PACKET | GET_ROOMS | PEER_JOIN_ATTEMPT => {
+                Err(ProtocolError::UnexpectedDirection(packet_id))
+            }
+
+            _ => Err(ProtocolError::UnknownPacketType(packet_id)),
+        }
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.is_empty() {
             return Err(ProtocolError::EmptyPacket);

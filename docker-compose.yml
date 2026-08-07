@@ -2,7 +2,6 @@ services:
   relay:
     image: ghcr.io/nodetunnel/relay-server:latest
     ports:
-      - "8081:8081"
       - "8080:8080/udp"
     environment:
       - UDP_BIND_ADDRESS=${UDP_BIND_ADDRESS}
@@ -11,3 +10,4 @@ services:
       - REMOTE_WHITELIST_ENDPOINT=${REMOTE_WHITELIST_ENDPOINT}
       - REMOTE_WHITELIST_TOKEN=${REMOTE_WHITELIST_TOKEN}
       - RELAY_ID=${RELAY_ID}
+      - SESSION_TIMEOUT_SECS=${SESSION_TIMEOUT_SECS:-5}

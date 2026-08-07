@@ -8,6 +8,9 @@ use crate::relay::clients::{ClientState, Clients};
 use crate::udp::common::TransferChannel;
 use crate::udp::paper_interface::PaperInterface;
 
+// Counted here, not per address, so random traffic cannot use up the slots.
+const MAX_PLAYERS: usize = 100;
+
 pub struct AuthHandler<'a> {
     udp: &'a mut PaperInterface,
     http: &'a reqwest::Client,
@@ -38,6 +41,14 @@ impl<'a> AuthHandler<'a> {
         if !self.is_version_allowed(version) {
             let msg = format!("Version {version} is not allowed.");
             self.send_err(sender_id, &msg).await;
+            self.force_disconnect(sender_id).await;
+            return;
+        }
+
+        // Check before the whitelist, so a full server does not waste a network call.
+        if self.clients.player_count() >= MAX_PLAYERS {
+            warn!("rejecting {}: already at the {} player cap", sender_id, MAX_PLAYERS);
+            self.send_err(sender_id, "Server is full").await;
             self.force_disconnect(sender_id).await;
             return;
         }
@@ -74,14 +85,15 @@ impl<'a> AuthHandler<'a> {
         let token = &self.config.remote_whitelist_token;
 
         if remote.is_empty() || token.is_empty() {
-            self.check_local_whitelist(app)
-        } else {
-            match self.check_remote_whitelist(remote, app, token).await {
-                Ok(res) => res,
-                Err(e) => {
-                    warn!("failed to check remote whitelist, defaulting to local: {}", e);
-                    self.check_local_whitelist(app)
-                }
+            return self.check_local_whitelist(app);
+        }
+
+        // An empty WHITELIST allows everyone, so falling back here would let anyone in.
+        match self.check_remote_whitelist(remote, app, token).await {
+            Ok(res) => res,
+            Err(e) => {
+                warn!("failed to check remote whitelist, denying {}: {}", app, e);
+                false
             }
         }
     }
@@ -124,11 +136,14 @@ impl<'a> AuthHandler<'a> {
     }
 
     async fn send_err(&mut self, target: u64, msg: &str) {
+        // These echo client input, and the client refuses strings over MAX_STRING_LEN.
+        let msg: String = msg.chars().take(64).collect();
+
         self.send_packet(
             target,
             &Packet::Error {
                 error_code: 401,
-                error_message: msg.to_string(),
+                error_message: msg,
             },
             TransferChannel::Reliable,
         )

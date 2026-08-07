@@ -5,6 +5,8 @@ use crate::protocol::packet::RoomInfo;
 const ID_CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ123456789";
 const ID_LENGTH: usize = 5;
 
+const MAX_PENDING_JOINS: usize = 32;
+
 #[derive(Default)]
 pub struct RoomIds {
     used: HashSet<String>
@@ -46,6 +48,8 @@ pub struct Room {
     client_to_godot: HashMap<u64, i32>,
     godot_to_client: HashMap<i32, u64>,
     next_godot_id: i32,
+    // A host can only let in players who asked to join.
+    pending_joins: HashSet<u64>,
 }
 
 impl Room {
@@ -59,6 +63,7 @@ impl Room {
             client_to_godot: HashMap::new(),
             godot_to_client: HashMap::new(),
             next_godot_id: 1,
+            pending_joins: HashSet::new(),
         }
     }
 
@@ -92,6 +97,29 @@ impl Room {
 
     pub fn get_host(&self) -> u64 {
         self.host_id
+    }
+
+    /// Returns `false` if too many people are already waiting to join.
+    pub fn add_pending_join(&mut self, client_id: u64) -> bool {
+        if self.pending_joins.contains(&client_id) {
+            return true;
+        }
+
+        if self.pending_joins.len() >= MAX_PENDING_JOINS {
+            return false;
+        }
+
+        self.pending_joins.insert(client_id);
+        true
+    }
+
+    /// Clears a waiting join. Returns `false` if `client_id` never asked.
+    pub fn take_pending_join(&mut self, client_id: u64) -> bool {
+        self.pending_joins.remove(&client_id)
+    }
+
+    pub fn clear_pending_join(&mut self, client_id: u64) {
+        self.pending_joins.remove(&client_id);
     }
 
     pub fn remove_peer(&mut self, renet_id: u64) {
@@ -146,13 +174,6 @@ impl Rooms {
     /// Gets a mutable reference to a room by an ID
     pub fn get_mut(&mut self, id: u64) -> Option<&mut Room> {
         self.by_id.get_mut(&id)
-    }
-
-    /// Gets a reference to a room by a join code.
-    /// Prefer `get` whenever possible as this requires 2 lookups.
-    pub fn get_by_jc(&self, jc: &str) -> Option<&Room> {
-        let id = self.jc_to_id.get(jc)?;
-        self.by_id.get(id)
     }
 
     /// Gets a mutable reference to a room by a join code.
