@@ -32,3 +32,6 @@ Then edit the `.env` as required. Once you have an app ID you should add it to t
 ---
 
 Dont forget to portforward the used port (default:8080/udp) on the device hosting this server (which may require using an external panel for hosting services such as AWS, Oracle etc.)
+
+## License
+MIT. See [LICENSE](LICENSE).
