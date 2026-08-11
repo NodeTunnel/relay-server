@@ -2,8 +2,33 @@ use tracing::warn;
 use crate::protocol::packet::{Packet, RoomInfo};
 use crate::relay::apps::Apps;
 use crate::relay::clients::{ClientState, Clients};
-use crate::udp::common::TransferChannel;
+use crate::protocol::serialize::MIN_ROOM_INFO_BYTES;
+use crate::relay::rooms::Room;
+use crate::udp::common::{TrafficClass, TransferChannel};
 use crate::udp::paper_interface::PaperInterface;
+
+// Capped so the room list cannot be used as a reflector.
+const ROOM_LIST_BUDGET: usize = 4500;
+
+fn fit_rooms(rooms: impl Iterator<Item = RoomInfo>) -> (Vec<RoomInfo>, usize) {
+    let mut fitted = Vec::new();
+    let mut used = 0usize;
+    let mut omitted = 0usize;
+
+    for info in rooms {
+        let cost = MIN_ROOM_INFO_BYTES + info.join_code.len() + info.metadata.len();
+
+        if used + cost > ROOM_LIST_BUDGET {
+            omitted += 1;
+            continue;
+        }
+
+        used += cost;
+        fitted.push(info);
+    }
+
+    (fitted, omitted)
+}
 
 pub struct RoomHandler<'a> {
     udp: &'a mut PaperInterface,
@@ -57,10 +82,21 @@ impl<'a> RoomHandler<'a> {
             return;
         };
 
-        let public_rooms: Vec<RoomInfo> = app.rooms.iter_mut()
+        // Sorted so the same rooms drop off each time.
+        let mut infos: Vec<RoomInfo> = app.rooms.iter()
             .filter(|room| room.is_public)
-            .map(|room| room.to_info())
+            .map(Room::to_info)
             .collect();
+        infos.sort_by(|a, b| a.join_code.cmp(&b.join_code));
+
+        let (public_rooms, omitted) = fit_rooms(infos.into_iter());
+
+        if omitted > 0 {
+            warn!(
+                "room list for app {} truncated: {} rooms sent, {} omitted",
+                app_id, public_rooms.len(), omitted
+            );
+        }
 
         self.send_packet(
             target,
@@ -158,7 +194,7 @@ impl<'a> RoomHandler<'a> {
     }
 
     async fn send_packet(&mut self, target: u64, packet: &Packet, channel: TransferChannel) {
-        if let Err(e) = self.udp.send(target, packet.to_bytes(), channel).await {
+        if let Err(e) = self.udp.send(target, packet.to_bytes(), channel, TrafficClass::Control).await {
             warn!("failed to send packet: {}", e);
         }
     }

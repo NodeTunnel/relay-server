@@ -55,4 +55,11 @@ impl Clients {
     pub fn get_mut(&mut self, id: u64) -> Option<&mut Client> {
         self.by_id.get_mut(&id)
     }
+
+    /// Clients that have authenticated.
+    pub fn player_count(&self) -> usize {
+        self.by_id.values()
+            .filter(|client| !matches!(client.state, ClientState::Connected))
+            .count()
+    }
 }

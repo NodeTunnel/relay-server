@@ -21,11 +21,17 @@ pub struct RelayServer {
     clients: Clients,
 }
 
+// The relay blocks on this check.
+const WHITELIST_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
 impl RelayServer {
     pub fn new(transport: PaperInterface, config: Config) -> Self {
         Self {
             udp: transport,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(WHITELIST_REQUEST_TIMEOUT)
+                .build()
+                .expect("failed to build the HTTP client"),
             config,
             apps: Apps::new(),
             clients: Clients::new(),
@@ -96,7 +102,7 @@ impl RelayServer {
             return;
         };
 
-        let Ok(packet) = Packet::from_bytes(&data) else {
+        let Ok(packet) = Packet::from_client_bytes(&data) else {
             warn!("received an invalid packet from {}", from_client_id);
             return;
         };
