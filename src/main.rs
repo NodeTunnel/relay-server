@@ -9,6 +9,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::signal;
 use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
+use crate::limits::TrafficLimits;
 use crate::relay::server::RelayServer;
 use crate::udp::paper_interface::PaperInterface;
 
@@ -16,6 +17,7 @@ mod config;
 mod udp;
 mod protocol;
 mod relay;
+mod limits;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -33,7 +35,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .next()
         .ok_or("Failed to resolve host name")?;
 
-    let transport = PaperInterface::new(addr).await?;
+    let limits = TrafficLimits::from_config(&config);
+    info!(
+        "egress limits: {} B/s per client, {} B/s global, {} bytes/day gameplay + {} control, {}ms windows",
+        limits.client_bytes_per_sec,
+        limits.global_bytes_per_sec,
+        limits.daily_bytes,
+        limits.daily_control_bytes,
+        limits.interval.as_millis()
+    );
+
+    let transport = PaperInterface::new(addr, limits).await?;
 
     let mut server = RelayServer::new(transport, config);
     info!("relay server started");

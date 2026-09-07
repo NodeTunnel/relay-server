@@ -1,7 +1,7 @@
 use tracing::warn;
 use crate::protocol::packet::Packet;
 use crate::relay::apps::Apps;
-use crate::udp::common::TransferChannel;
+use crate::udp::common::{TrafficClass, TransferChannel};
 use crate::udp::paper_interface::PaperInterface;
 
 pub struct GameDataHandler<'a> {
@@ -52,7 +52,7 @@ impl<'a> GameDataHandler<'a> {
 
     // TODO: get rid of duplicates
     async fn send_packet(&mut self, target: u64, packet: &Packet, channel: TransferChannel) {
-        if let Err(e) = self.udp.send(target, packet.to_bytes(), channel).await {
+        if let Err(e) = self.udp.send(target, packet.to_bytes(), channel, TrafficClass::Gameplay).await {
             warn!("failed to send packet: {}", e);
         }
     }

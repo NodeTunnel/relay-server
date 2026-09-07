@@ -3,7 +3,7 @@ use crate::protocol::packet::Packet;
 use crate::relay::apps::Apps;
 use crate::relay::clients::{ClientState, Clients};
 use crate::relay::handlers::room::RoomHandler;
-use crate::udp::common::TransferChannel;
+use crate::udp::common::{TrafficClass, TransferChannel};
 use crate::udp::paper_interface::PaperInterface;
 
 struct DisconnectInfo {
@@ -117,6 +117,7 @@ impl<'a> DisconnectHandler<'a> {
             target_client,
             packet.to_bytes(),
             channel,
+            TrafficClass::Control,
         ).await {
             Ok(()) => {},
             Err(e) => warn!("failed to send packet: {}", e)
