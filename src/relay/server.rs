@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::time::Duration;
+use serde::Serialize;
 use tracing::{debug, info, warn};
 use crate::config::loader::Config;
 use crate::protocol::packet::Packet;
@@ -24,6 +25,16 @@ pub struct RelayServer {
 // The relay blocks on this check.
 const WHITELIST_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Serialize)]
+struct Heartbeat<'a> {
+    relay_id: &'a str,
+    version: &'a str,
+    players: usize,
+    rooms: usize,
+}
+
 impl RelayServer {
     pub fn new(transport: PaperInterface, config: Config) -> Self {
         Self {
@@ -44,9 +55,11 @@ impl RelayServer {
         let mut cleanup = tokio::time::interval(Duration::from_secs(1));
         // TODO: remove magic numbers
         let mut resend  = tokio::time::interval(Duration::from_millis(50));
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
 
         cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -68,8 +81,39 @@ impl RelayServer {
                     // TODO: remove magic numbers
                     self.udp.do_resends(Duration::from_millis(100)).await;
                 }
+
+                _ = heartbeat.tick() => {
+                    self.send_heartbeat();
+                }
             }
         }
+    }
+
+    fn send_heartbeat(&self) {
+        let endpoint = &self.config.heartbeat_endpoint;
+        if endpoint.is_empty() {
+            return;
+        }
+
+        let body = Heartbeat {
+            relay_id: &self.config.relay_id,
+            version: env!("CARGO_PKG_VERSION"),
+            players: self.clients.player_count(),
+            rooms: self.apps.iter().map(|app| app.rooms.iter().count()).sum(),
+        };
+
+        let request = self.http_client
+            .post(endpoint)
+            .header("X-Relay-Token", &self.config.remote_whitelist_token)
+            .json(&body);
+
+        tokio::spawn(async move {
+            match request.send().await {
+                Ok(res) if res.status().is_success() => debug!("heartbeat sent"),
+                Ok(res) => warn!("heartbeat rejected: {}", res.status()),
+                Err(e) => warn!("heartbeat failed: {}", e),
+            }
+        });
     }
 
     /// Handles an event from the UDP layer.
