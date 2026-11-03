@@ -24,7 +24,9 @@ pub enum Packet {
     PeerLeftRoom { peer_id: i32 },
     GameData { from_peer: i32, data: Vec<u8> },
     ForceDisconnect,
-    Error { error_code: i32, error_message: String }
+    Error { error_code: i32, error_message: String },
+    Leave,
+    KickPeer { peer_id: i32 },
 }
 
 impl Packet {
@@ -36,7 +38,7 @@ impl Packet {
 
         match packet_id {
             AUTHENTICATE | CREATE_ROOM | JOIN_ROOM | GAME_DATA | REQ_ROOMS | UPDATE_ROOM
-            | JOIN_RES => Self::from_bytes(bytes),
+            | JOIN_RES | LEAVE | KICK_PEER => Self::from_bytes(bytes),
 
             CLIENT_AUTHENTICATED | CONNECTED_TO_ROOM | PEER_JOINED | PEER_LEFT
             | FORCE_DISCONNECT | ERROR_PACKET | GET_ROOMS | PEER_JOIN_ATTEMPT => {
@@ -139,6 +141,13 @@ impl Packet {
                 Packet::JoinRes { target_id, room_id, allowed }
             }
 
+            LEAVE => Packet::Leave,
+
+            KICK_PEER => {
+                let (peer_id, _) = read_i32(rest)?;
+                Packet::KickPeer { peer_id }
+            }
+
             _ => return Err(ProtocolError::UnknownPacketType(packet_id))
         })
     }
@@ -227,6 +236,15 @@ impl Packet {
                 buf.push(ERROR_PACKET);
                 push_i32(&mut buf, *error_code);
                 push_string(&mut buf, error_message);
+            }
+
+            Packet::Leave => {
+                buf.push(LEAVE);
+            }
+
+            Packet::KickPeer { peer_id } => {
+                buf.push(KICK_PEER);
+                push_i32(&mut buf, *peer_id);
             }
         }
 

@@ -19,6 +19,27 @@ mod protocol;
 mod relay;
 mod limits;
 
+#[cfg(unix)]
+async fn shutdown_signal() -> std::io::Result<()> {
+    use signal::unix::{signal, SignalKind};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut hangup = signal(SignalKind::hangup())?;
+
+    tokio::select! {
+        res = signal::ctrl_c() => res?,
+        _ = terminate.recv() => {}
+        _ = hangup.recv() => {}
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() -> std::io::Result<()> {
+    signal::ctrl_c().await
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let subscriber = FmtSubscriber::builder()
@@ -55,7 +76,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 error!("server error: {}", e);
             }
         }
-        _ = signal::ctrl_c() => {
+        res = shutdown_signal() => {
+            res?;
             info!("shutdown signal received");
         }
     }
