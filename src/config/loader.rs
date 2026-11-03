@@ -1,7 +1,7 @@
-use std::fs;
-use serde::Deserialize;
-use std::path::PathBuf;
 use crate::config::error::ConfigError;
+use serde::Deserialize;
+use std::fs;
+use std::path::PathBuf;
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
@@ -22,6 +22,10 @@ pub struct Config {
 
     #[serde(default = "defaults::empty_string")]
     pub relay_id: String,
+
+    /// Endpoint the relay POSTs a liveness heartbeat to. Empty disables it.
+    #[serde(default = "defaults::empty_string")]
+    pub heartbeat_endpoint: String,
 
     /// Sustained egress allowed to a single client.
     #[serde(default = "defaults::max_client_bytes_per_sec")]
@@ -137,6 +141,7 @@ mod tests {
             remote_whitelist_endpoint: defaults::empty_string(),
             remote_whitelist_token: defaults::empty_string(),
             relay_id: defaults::empty_string(),
+            heartbeat_endpoint: defaults::empty_string(),
             max_client_bytes_per_sec: defaults::max_client_bytes_per_sec(),
             max_global_bytes_per_sec: defaults::max_global_bytes_per_sec(),
             max_daily_bytes: defaults::max_daily_bytes(),
