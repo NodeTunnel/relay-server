@@ -56,6 +56,11 @@ impl Clients {
         self.by_id.get_mut(&id)
     }
 
+    /// The IDs of all connected clients.
+    pub fn ids(&self) -> Vec<u64> {
+        self.by_id.keys().copied().collect()
+    }
+
     /// Clients that have authenticated.
     pub fn player_count(&self) -> usize {
         self.by_id.values()

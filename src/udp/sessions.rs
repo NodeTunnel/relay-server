@@ -1,13 +1,16 @@
+use crate::limits::{BandwidthLimiter, MAX_TRAFFIC_VIOLATIONS, TrafficLimits};
+use paperudp::channel::Channel;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
-use paperudp::channel::Channel;
 use tracing::warn;
-use crate::limits::{BandwidthLimiter, TrafficLimits, MAX_TRAFFIC_VIOLATIONS};
 
 const MAX_RESEND_ROUNDS: u32 = 20;
 
 const MAX_SESSIONS: usize = 8192;
+
+const SESSION_LIMIT_REASON: &str = "Session limit reached";
+const TIMED_OUT_REASON: &str = "Connection timed out due being idle";
 
 pub struct ClientSession {
     pub id: u64,
@@ -59,12 +62,18 @@ impl ConnectionManager {
     pub fn get_or_create(&mut self, addr: SocketAddr) -> Option<(&mut ClientSession, bool)> {
         if let Some(id) = self.addr_to_id.get(&addr) {
             // TODO: get rid of expect
-            let s = self.id_to_session.get_mut(id).expect("session exists in both maps");
+            let s = self
+                .id_to_session
+                .get_mut(id)
+                .expect("session exists in both maps");
             return Some((s, false));
         }
 
         if self.id_to_session.len() >= MAX_SESSIONS {
-            warn!("refusing a session for {}: at the {} session cap", addr, MAX_SESSIONS);
+            warn!(
+                "refusing a session for {}: at the {} session cap",
+                addr, MAX_SESSIONS
+            );
             return None;
         }
 
@@ -103,10 +112,7 @@ impl ConnectionManager {
         self.id_to_session.get_mut(id)
     }
 
-    pub fn get_resends(
-        &mut self,
-        interval: Duration,
-    ) -> Vec<(SocketAddr, Vec<u8>)> {
+    pub fn get_resends(&mut self, interval: Duration) -> Vec<(SocketAddr, Vec<u8>)> {
         let mut out = Vec::new();
         let now = Instant::now();
 
@@ -120,7 +126,10 @@ impl ConnectionManager {
 
             if packets.is_empty() {
                 // Runs more often than `interval`; an empty round may not mean clear.
-                if session.last_resend_at.is_none_or(|t| now.duration_since(t) > interval) {
+                if session
+                    .last_resend_at
+                    .is_none_or(|t| now.duration_since(t) > interval)
+                {
                     session.resend_rounds = 0;
                 }
                 continue;
@@ -137,9 +146,9 @@ impl ConnectionManager {
         out
     }
 
-    /// Drops idle and over-budget sessions. The server loop turns the returned
-    /// IDs into `ClientDisconnected` events.
-    pub fn cleanup_sessions(&mut self, timeout: Duration) -> Vec<u64> {
+    /// Finds idle and over-budget sessions, with the reason to give each client.
+    /// Sessions stay registered so the server loop can still send that reason.
+    pub fn expired_sessions(&mut self, timeout: Duration) -> Vec<(u64, &'static str)> {
         let now = Instant::now();
         let mut expired = Vec::new();
 
@@ -153,22 +162,16 @@ impl ConnectionManager {
                     now.duration_since(session.created).as_secs(),
                     session.traffic_violations
                 );
-                expired.push(id);
+                expired.push((id, SESSION_LIMIT_REASON));
                 continue;
             }
 
             if now.duration_since(session.last_heard_from) > timeout {
-                expired.push(id);
+                expired.push((id, TIMED_OUT_REASON));
                 continue;
             }
 
             session.traffic_violations = session.traffic_violations.saturating_sub(1);
-        }
-
-        for id in &expired {
-            if let Some(session) = self.id_to_session.remove(id) {
-                self.addr_to_id.remove(&session.addr);
-            }
         }
 
         expired
@@ -210,7 +213,7 @@ mod tests {
 
         // Resends stop, but the session survives until the idle timeout.
         assert!(cm.get_resends(Duration::from_millis(100)).is_empty());
-        assert!(cm.cleanup_sessions(TIMEOUT).is_empty());
+        assert!(cm.expired_sessions(TIMEOUT).is_empty());
         assert!(cm.get_by_id(&id).is_some());
     }
 
@@ -221,10 +224,10 @@ mod tests {
 
         cm.get_by_id(&id).unwrap().traffic_violations = 5;
 
-        cm.cleanup_sessions(TIMEOUT);
+        cm.expired_sessions(TIMEOUT);
         assert_eq!(cm.get_by_id(&id).unwrap().traffic_violations, 4);
 
-        cm.cleanup_sessions(TIMEOUT);
+        cm.expired_sessions(TIMEOUT);
         assert_eq!(cm.get_by_id(&id).unwrap().traffic_violations, 3);
     }
 
@@ -235,7 +238,9 @@ mod tests {
 
         cm.get_by_id(&id).unwrap().traffic_violations = MAX_TRAFFIC_VIOLATIONS + 1;
 
-        assert_eq!(cm.cleanup_sessions(TIMEOUT), vec![id]);
-        assert!(cm.get_by_id(&id).is_none());
+        assert_eq!(
+            cm.expired_sessions(TIMEOUT),
+            vec![(id, SESSION_LIMIT_REASON)]
+        );
     }
 }

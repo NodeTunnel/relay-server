@@ -52,7 +52,7 @@ impl RelayServer {
     /// Starts the server loop.
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         // TODO: remove magic numbers
-        let mut cleanup = tokio::time::interval(Duration::from_secs(1));
+        let mut cleanup = tokio::time::interval(Duration::from_secs(2));
         // TODO: remove magic numbers
         let mut resend  = tokio::time::interval(Duration::from_millis(50));
         let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -72,8 +72,12 @@ impl RelayServer {
 
                 _ = cleanup.tick() => {
                     // TODO: remove magic numbers
-                    for client_id in self.udp.connection_manager.cleanup_sessions(Duration::from_secs(5)) {
-                        self.handle_event(ServerEvent::ClientDisconnected { client_id }).await;
+                    for (client_id, reason) in self.udp.connection_manager.expired_sessions(Duration::from_secs(8)) {
+                        DisconnectHandler::new(
+                            &mut self.udp,
+                            &mut self.clients,
+                            &mut self.apps,
+                        ).drop_client(client_id, reason).await;
                     }
                 }
 
@@ -122,13 +126,6 @@ impl RelayServer {
             ServerEvent::ClientConnected { client_id } => {
                 self.clients.create(client_id);
             }
-            ServerEvent::ClientDisconnected { client_id } => {
-                DisconnectHandler::new(
-                    &mut self.udp,
-                    &mut self.clients,
-                    &mut self.apps,
-                ).handle_disconnect(client_id).await;
-            }
             ServerEvent::PacketReceived { client_id, data, channel } => {
                 debug!("got packet: {:?}", data);
                 self.handle_packet(client_id, data, channel).await;
@@ -150,6 +147,15 @@ impl RelayServer {
             warn!("received an invalid packet from {}", from_client_id);
             return;
         };
+
+        if matches!(packet, Packet::Leave) {
+            DisconnectHandler::new(
+                &mut self.udp,
+                &mut self.clients,
+                &mut self.apps,
+            ).handle_leave(from_client_id).await;
+            return;
+        }
 
         match client.state {
             ClientState::Connected => self.handle_unauthenticated_packet(from_client_id, &packet).await,
@@ -215,6 +221,13 @@ impl RelayServer {
                     &mut self.apps,
                     &mut self.clients,
                 ).recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
+            Packet::KickPeer { peer_id } => {
+                DisconnectHandler::new(
+                    &mut self.udp,
+                    &mut self.clients,
+                    &mut self.apps,
+                ).kick_peer(from_client_id, client_app_id, client_room_id, *peer_id).await;
+            }
             Packet::GameData { from_peer, data } => {
                 GameDataHandler::new(
                     &mut self.udp,
@@ -231,12 +244,11 @@ impl RelayServer {
     /// Forcefully disconnects all clients from the server.
     /// Should be called when the server shuts down.
     pub async fn cleanup(&mut self) {
-        let mut disconnects: Vec<u64> = Vec::new();
+        let disconnects = self.clients.ids();
         let mut to_remove: Vec<(u64, u64)> = Vec::new();
 
         for app in self.apps.iter() {
             for room in app.rooms.iter() {
-                disconnects.extend(room.get_clients().iter().copied());
                 to_remove.push((app.id, room.id));
             }
         }
@@ -250,7 +262,7 @@ impl RelayServer {
         );
 
         for id in disconnects {
-            dh.force_disconnect(id).await;
+            dh.notify_and_disconnect(id, "Relay is shutting down").await;
         }
 
         let mut rh = RoomHandler::new(

@@ -9,11 +9,11 @@ cd relay-server
 cargo build --release
 
 #Linux
-RELAY_ID=LOCAL ALLOWED_VERSIONS=1.1.0_beta UDP_BIND_ADDRESS=0.0.0.0:8080 ./relay_server
+RELAY_ID=LOCAL ALLOWED_VERSIONS=1.1.0_beta,1.2.0_beta UDP_BIND_ADDRESS=0.0.0.0:8080 ./relay_server
 
 #Windows
 set RELAY_ID=LOCAL
-set ALLOWED_VERSIONS=1.1.0_beta 
+set ALLOWED_VERSIONS=1.1.0_beta,1.2.0_beta 
 set UDP_BIND_ADDRESS=0.0.0.0:8080 
 relay_server.exe
 ```
